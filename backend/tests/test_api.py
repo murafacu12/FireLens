@@ -53,15 +53,21 @@ def test_calendar(client):
 
 
 def test_alert_rule_fires_on_reingest(client):
-    rule = client.post(
-        "/api/alerts/rules",
-        json={"name": "Corrientes", "west": -59, "south": -29.5, "east": -56, "north": -27, "min_confidence": "low"},
-    )
+    # Which synthetic fire is "active" (seen in the last 24 h) depends on the time of day, so the
+    # rule is drawn around whichever fire is active now instead of a hard-coded place.
+    active = client.get("/api/events", params={"status": "active", "min_detections": 5, "sort": "area"}).json()
+    assert active, "demo data should always contain an active fire"
+    ev = active[0]
+    box = {"west": ev["west"] - 0.5, "south": ev["south"] - 0.5, "east": ev["east"] + 0.5, "north": ev["north"] + 0.5}
+    rule = client.post("/api/alerts/rules", json={"name": "Active fire zone", **box, "min_confidence": "low"})
     assert rule.status_code == 201
-    report = client.post("/api/ingest", json={"days": 30}).json()
-    assert report["demo"] is True and report["stored"] > 0
+    # the fire is already burning: the new rule alerts immediately, without waiting for new data
     alerts = client.get("/api/alerts").json()
-    assert all(a["latitude"] > -29.5 for a in alerts)
+    assert any(a["rule_id"] == rule.json()["id"] for a in alerts)
+    report = client.post("/api/ingest", json={"days": 30}).json()
+    assert report["demo"] is True and report["stored"] > 0 and report["new"] == 0  # same data: nothing new
+    alerts = client.get("/api/alerts").json()
+    assert all(box["south"] <= a["latitude"] <= box["north"] for a in alerts)
     assert any(a["rule_id"] == rule.json()["id"] for a in alerts)
     # idempotent: re-ingesting the same data must not duplicate alerts
     client.post("/api/ingest", json={"days": 30})

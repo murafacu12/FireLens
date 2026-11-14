@@ -70,6 +70,7 @@
                 <label><input type="checkbox" name="instrument" value="MODIS" checked /> MODIS <small>1 km</small></label>
                 <label><input type="checkbox" name="instrument" value="VIIRS" checked /> VIIRS <small>375 m</small></label>
               </div>
+              <small class="hint">Applies instantly: MODIS and VIIRS are stored and drawn as separate layers.</small>
               <label>Satellite
                 <select name="satellite" multiple size="5">
                   <option>Terra</option><option>Aqua</option><option>Suomi NPP</option><option>NOAA-20</option><option>NOAA-21</option>
@@ -105,7 +106,7 @@
               <div class="row">
                 <label>Min detections <input type="number" name="min_detections" min="1" step="1" /></label>
                 <label>Status
-                  <select name="status"><option value="">All</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+                  <select name="status"><option value="">All</option><option value="active">Active</option><option value="inactive">No recent detection</option></select>
                 </label>
               </div>
             </fieldset>
@@ -142,6 +143,8 @@
             <label class="inline"><input type="checkbox" id="lyr-events" checked /> Fire events (size = footprint area)</label>
             <label class="inline"><input type="checkbox" id="lyr-zones" checked /> Alert zones</label>
             <label class="inline"><input type="checkbox" id="lyr-ndvi" /> Vegetation NDVI (VIIRS 8-day, NASA GIBS)</label>
+            <label class="inline"><input type="checkbox" id="lyr-static" /> Non-fire heat sources (gas flares, volcanoes, offshore platforms)</label>
+            <p class="hint">Hidden by default: the NASA archive labels them, and FireLens also marks near-real-time detections on those sites. They never form fire events or trigger alerts.</p>
           </fieldset>
           <div class="legend">
             <div class="ramp"></div>

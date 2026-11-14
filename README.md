@@ -30,7 +30,7 @@ npm run dev        # http://localhost:5173 (proxies /api to :8000)
 
 | Mode | When | What you get |
 |---|---|---|
-| **Live, keyless** (default) | no `FIRELENS_FIRMS_MAP_KEY` | Real NASA FIRMS detections from the public files for one region (`FIRELENS_PUBLIC_REGION`, default `South_America`). The last 7 days are loaded on first start and refreshed hourly. |
+| **Live, keyless** (default) | no `FIRELENS_FIRMS_MAP_KEY` | Real NASA FIRMS detections from the public files for the whole world (`FIRELENS_PUBLIC_REGION`, default `Global`). The last 7 days are loaded on first start and refreshed hourly. |
 | **Live + archive** | MAP_KEY set in `.env` | Everything above, plus **fire history**: any date range for a country or the current globe view, from NASA's science-quality archive (SP) and NRT for recent months. |
 | **Demo** | `FIRELENS_DEMO_MODE=true` | Synthetic FIRMS-format data for offline UI work. |
 
@@ -72,11 +72,16 @@ Interactive docs at http://localhost:8000/docs.
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /api/tiles/{cells\|points}/{z}/{x}/{y}` | Map tiles by zoom level: grouped markers per sensor (z 0–7) or individual detections + events (z 7). Same filters plus `hours` (rolling window). ETag + 304 |
+| `GET /api/tiles/meta` | `data_version` and current hour: when the map's tiles go stale |
+| `GET /api/export/{modis\|viirs}.csv` | One sensor's detections with its native field names (`start`, `end`, `bbox`) |
 | `GET /api/detections` | Harmonized pixels. Filters: `start`, `end`, `bbox=w,s,e,n`, `lat`+`lon`+`radius_km`, `instrument`, `satellite`, `min_confidence`, `min_frp`, `max_frp`, `daynight`, `event_id` |
 | `GET /api/detections/compact` | Same filters, columnar arrays (`id, lat, lon, frp, conf, viirs, t`) for map rendering. About 10x smaller, gzipped |
 | `GET /api/detections/{id}` | One full detection (loaded when a point is clicked) |
-| `GET /api/events` | Fire events. Filters: time overlap, area, `min_area`/`max_area`, `min_frp`, `min_detections`, `status`, `instrument`, `sort=recent\|area\|frp` |
-| `GET /api/events/{id}` | Event with all its detections |
+| `GET /api/events` | Fire events. Filters: time overlap, area, `min_area`/`max_area`, `min_frp`, `min_detections`, `status`, `lifecycle_state`, `min_evidence`, `instrument`, `sort=recent\|area\|frp` |
+| `GET /api/events/{id}` | Event with all its detections. An id that was merged or renamed resolves to the current event (`resolved_from`) |
+| `GET /api/events/{id}/timeline` | Whole-fire FRP per satellite overpass (MODIS and VIIRS kept apart) |
+| `GET /api/events/{id}/history`, `/lineage` | Every recorded change (created, grown, state, merged, split, renamed) and where ids went |
 | `GET /api/calendar` | Daily detections / new events / FRP (`start`, `end`, optional area) |
 | `GET/POST/DELETE /api/alerts/rules`, `GET /api/alerts` | Alert rules (box or circle + thresholds, optional webhook) and triggered alerts |
 | `GET /api/risk?lat&lon` | 7-day fire-danger baseline (HDW, dryness, activity, NDVI) |
@@ -86,6 +91,9 @@ Interactive docs at http://localhost:8000/docs.
 | `GET /api/history/jobs[/{id}]`, `DELETE /api/history/jobs/{id}` | Backfill progress / cancel |
 | `GET /api/history/availability` | Date span per FIRMS product and your key's transaction usage |
 | `GET /api/history/countries` | Countries loadable by name (mapped to bounding boxes) |
+
+Database layout, zoom pyramid and caching: [docs/DATABASE.md](docs/DATABASE.md).
+Fire events: [model](docs/FIRE_EVENT_MODEL.md) · [algorithm](docs/CLUSTERING_ALGORITHM.md) · [audit](docs/FIRE_CLUSTERING_AUDIT.md) · [benchmarks](docs/CLUSTERING_BENCHMARKS.md) · [limitations](docs/CLUSTERING_LIMITATIONS.md) · [migration v3](docs/MIGRATION_V3.md).
 
 ## Tests
 

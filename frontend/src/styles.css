@@ -85,7 +85,19 @@ h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); text-transform: u
 
 .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); text-transform: capitalize; }
 .pill.active { color: #ffb08a; border-color: #7a3417; background: #3b1a0c; }
-.pill.inactive { color: var(--muted); }
+.pill.inactive { color: var(--muted); text-transform: none; }
+.pill.reactivated { color: #ffd38a; border-color: #7a5417; background: #3b2a0c; }
+.pill.archived { color: var(--muted); text-transform: none; opacity: 0.8; }
+.frp-timeline { margin: 8px 0; }
+.spark-title { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.spark-title .viirs { color: #ff8a1f; } .spark-title .modis { color: #5ab4ff; }
+.spark { width: 100%; height: 70px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
+.spark polyline { fill: none; stroke-width: 1.5; }
+.spark .viirs { stroke: #ff8a1f; fill: #ff8a1f; } .spark polyline.viirs { fill: none; }
+.spark .modis { stroke: #5ab4ff; fill: #5ab4ff; } .spark polyline.modis { fill: none; }
+details.history { margin: 8px 0; font-size: 12px; }
+details.history summary { cursor: pointer; color: var(--muted); }
+.history-list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 .pill.critical { color: #ffd7d5; background: #5a1714; border-color: var(--crit); }
 .pill.warning { color: #ffe9b0; background: #4a3708; border-color: var(--warn); }
 .pill.info { color: #c8ecff; background: #0c3247; border-color: var(--info); }

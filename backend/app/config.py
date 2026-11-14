@@ -24,6 +24,10 @@ class Settings(BaseSettings):
 
     # Synthetic data for offline development / UI work. Opt-in.
     demo_mode: bool = False
+    # A database that already holds detections is never upgraded (new tables/columns, event or map
+    # rebuilds) unless this is set: back it up first (see docs/MIGRATION_V3.md). Empty databases
+    # (first start, tests) are always set up automatically.
+    allow_schema_upgrade: bool = False
     demo_days: int = 30
 
     # Default: separate files so demo and real data never mix (see database_url_effective).
@@ -40,7 +44,7 @@ class Settings(BaseSettings):
     ]
     ingest_area: str = "world"  # explicit API requests (with key): 'world' or 'west,south,east,north'
     ingest_days: int = 1
-    public_region: str = "South_America"  # seed + scheduled refresh: FIRMS public-file region (no key needed)
+    public_region: str = "Global"  # seed + scheduled refresh: FIRMS public-file region (no key needed)
     public_window: Literal["24h", "48h", "7d"] = "24h"  # what each scheduled refresh pulls
     seed_window: Literal["24h", "48h", "7d"] = "7d"  # first start with an empty database
 
@@ -48,6 +52,16 @@ class Settings(BaseSettings):
     cluster_tolerance_km: float = 1.0
     cluster_max_gap_hours: float = 24.0
     event_active_hours: float = 24.0
+    # E2 continuity edge: detections up to this far apart in time link only where their pixels
+    # overlap (bridges missed passes / cloud on the same ground). 0 disables it.
+    cluster_continuity_gap_hours: float = 72.0
+    cluster_continuity_tolerance_km: float = 0.0
+    event_archive_days: float = 30.0  # no detection for this long: lifecycle_state "archived"
+    # E2 continuity edge: detections up to this far apart in time link only where their pixels
+    # overlap (bridges missed passes / cloud on the same ground). 0 disables it.
+    cluster_continuity_gap_hours: float = 72.0
+    cluster_continuity_tolerance_km: float = 0.0
+    event_archive_days: float = 30.0  # no detection for this long: lifecycle_state "archived"
 
     # Third-party providers
     open_meteo_url: str = "https://api.open-meteo.com/v1/forecast"

@@ -15,7 +15,7 @@ historical fire calendar, alerts, and fire-danger prediction from weather, fuel 
                  │                                       webhooks)                              │
  Open-Meteo ───► │ services/risk (HDW + dryness + activity + fuel)                               │
  Copernicus  ──► │ services/ndvi (Sentinel-2 L2A NDVI, Statistical API)                          │
-                 │ api.py  /api/detections /events /calendar /alerts /risk /ndvi /ingest        │
+                 │ api.py  /api/tiles /detections /events /calendar /alerts /risk /export       │
                  └───────────────────────────────▲───────────────────────────────────────────────┘
                                                  │ JSON
                  ┌──────────────── frontend (Vite + TypeScript + CesiumJS) ────────────────┐
@@ -34,12 +34,13 @@ historical fire calendar, alerts, and fire-danger prediction from weather, fuel 
 | `ingest/normalize.py` | MODIS/VIIRS → `FireDetection`. See [DATA_HARMONIZATION.md](DATA_HARMONIZATION.md). |
 | `ingest/clustering.py` | Detections → fire events (space-time union-find, footprint area). |
 | `ingest/demo.py` | Synthetic FIRMS-format CSVs, so the full pipeline runs without a key. |
-| `services/store.py` | Upsert (SP supersedes NRT). Rebuilds only the events touched by new data (the window grows until no event straddles it). |
+| `services/store.py` | Upsert (SP supersedes NRT; rows already stored are skipped). Re-clusters only the changed detections plus the events they belong to or could link to. |
+| `services/cells.py` | The zoom pyramid (`fire_cells`) and the map tiles built from it. See [DATABASE.md](DATABASE.md). |
 | `services/queries.py` | Filters: time, bbox (antimeridian-safe), point+radius, sensor, satellite, confidence, FRP, day/night, event size/status. Daily calendar aggregates. |
 | `services/alerts.py` | Rules (box or circle + thresholds) evaluated on active events after each ingest. Deduplicated per (rule, event). Severity levels. Best-effort webhooks. |
 | `services/risk.py` | Baseline fire-danger forecast (7 days). Transparent heuristic, see below. |
 | `services/ndvi.py` | Copernicus Data Space OAuth + Statistical API, cloud-masked mean NDVI. |
-| `services/pipeline.py` | Orchestrates fetch → normalize → store → events → alerts. Routine refreshes always use the free public files; the key is reserved for explicit area, date or history requests. |
+| `services/pipeline.py` | Orchestrates fetch → normalize → store → pyramid + events → alerts. Routine refreshes always use the free public files; the key is reserved for explicit area, date or history requests. |
 | `services/history.py` | History backfill. Plans SP-else-NRT per platform and day from `data_availability`, groups days into API-sized chunks, and runs as a background job with progress, partial-failure reporting and rate-limit retries. |
 | `main.py` | App factory, lifespan (DB, HTTP client, demo seed, optional scheduler). |
 
@@ -57,14 +58,15 @@ It is deliberately simple and explainable, and it's the baseline an ML model mus
 ## Frontend
 
 * CesiumJS without an ion token by default: Esri World Imagery, OSM, and NASA GIBS **VIIRS NOAA-20 daily true colour** (date-selectable) as base layers. **VIIRS NDVI 8-day** is an overlay. `VITE_CESIUM_ION_TOKEN` turns on 3D world terrain.
-* Detections use a `PointPrimitiveCollection` (tens of thousands of points). Colour shows FRP on a log scale. The outline shows the sensor (white = VIIRS, dark = MODIS).
+* **Progressive rendering by zoom level** (`tiles.ts`): the globe draws fixed tiles. Zoomed out, each tile is a 16 × 16 grid of grouped markers read from the server's pyramid. Each zoom step halves the cell size. From ~300 km altitude, ~150 km tiles carry the individual detections and fire events. Moving or zooming requests only tiles never loaded for the current filters. A zoom change keeps the old tiles on screen until the new ones have all arrived. Toggling MODIS/VIIRS redraws from memory, because tiles carry the two sensors separately. See [DATABASE.md](DATABASE.md#caching-and-the-only-load-what-changed-rule).
+* Detections use a `PointPrimitiveCollection` per tile. Colour shows FRP on a log scale. The outline shows the sensor (white = VIIRS, dark = MODIS).
 * Events are circles sized by footprint area, coloured by status.
 * Tabs: Filters · Layers · Calendar (monthly heat map → that day's fires) · Alerts (rule from current view or point+radius).
 
 ## Roadmap
 
-1. **Data platform**: PostgreSQL + PostGIS (geometry columns, GiST indexes, `ST_ClusterDBSCAN`), Alembic migrations, a job queue for ingestion (FIRMS rate limit: 5,000 transactions / 10 min). Backfill the archive (SP products) for the calendar.
+1. **Data platform**: PostgreSQL + PostGIS (geometry columns, GiST indexes, `detections` partitioned by instrument and month), Alembic migrations, NRT retention, a job queue for ingestion (FIRMS rate limit: 5,000 transactions / 10 min). Backfill the archive (SP products) for the calendar.
 2. **More sources**: GOES/Himawari geostationary fire products (10-minute revisit), Landsat/Sentinel-2 active fire, MCD64A1 burned area, Sentinel-2 dNBR burn severity, ERA5 / Open-Meteo history, land cover (ESA WorldCover) as fuel type.
 3. **Prediction**: build a training set (detections × weather × NDVI × land cover × terrain), then a gradient-boosted ignition/spread probability per grid cell, validated against held-out seasons. Expose it as a risk raster layer on the globe.
 4. **Alerts**: email/Telegram/WhatsApp channels, user accounts, per-user zones, quiet hours.
-5. **Globe**: time-slider animation (Cesium clock), 3D smoke plumes, event perimeter polygons (concave hull), vector tiles for very large result sets.
+5. **Globe**: time-slider animation (Cesium clock), 3D smoke plumes, event perimeter polygons (concave hull).

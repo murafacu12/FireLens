@@ -6,6 +6,7 @@ MAP_KEY:   area API (any date, NRT and SP archive), data availability, key statu
            (FIRMS retired the country API: it now answers "Invalid API call.")
 """
 
+import asyncio
 import csv
 import io
 from datetime import date, timedelta
@@ -13,6 +14,10 @@ from datetime import date, timedelta
 import httpx
 
 from app.ingest.sources import PUBLIC_REGIONS, PUBLIC_WINDOWS, get_source
+
+
+RETRIES = 2  # network failures only; 3 attempts in total
+RETRY_BACKOFF_S = 5.0  # 5 s, then 10 s
 
 
 class FirmsError(RuntimeError):
@@ -45,11 +50,22 @@ class FirmsClient:
             )
         return self._key
 
-    async def _get_csv(self, url: str, timeout: float = 120) -> str:
-        try:
-            resp = await self._http.get(url, timeout=timeout)
-        except httpx.HTTPError as exc:
-            raise FirmsError(self._redact(f"FIRMS request failed: {exc!r}")) from None
+    async def _get_csv(self, url: str, timeout: float = 180) -> str:
+        # Worldwide files are 6-35 MB: a dropped connection or timeout mid-download is common
+        # enough on real networks that it gets retried with backoff. Answers from FIRMS itself
+        # (bad key, rate limit, bad request) are not network failures and are never retried.
+        resp = None
+        for attempt in range(RETRIES + 1):
+            try:
+                resp = await self._http.get(url, timeout=timeout)
+                if resp.status_code < 500:
+                    break
+            except httpx.TransportError as exc:  # timeouts, resets, DNS, protocol errors
+                if attempt == RETRIES:
+                    raise FirmsError(self._redact(f"FIRMS request failed after {RETRIES + 1} attempts: {exc!r}")) from None
+            except httpx.HTTPError as exc:
+                raise FirmsError(self._redact(f"FIRMS request failed: {exc!r}")) from None
+            await asyncio.sleep(RETRY_BACKOFF_S * 2**attempt)
         body = resp.text
         head = body[:200].strip()
         if resp.status_code == 429 or "exceed" in head.lower():

@@ -42,12 +42,14 @@ class RiskDay(BaseModel):
 class RiskForecast(BaseModel):
     latitude: float
     longitude: float
-    model: str = "baseline-hdw-v1"
+    model: str = "baseline-hdw-v2"
     disclaimer: str = "Heuristic baseline for exploration; not an official fire-danger rating."
     nearby_detections_7d: int
     nearby_detections_prev_7d: int
     activity_trend: str
     ndvi: float | None
+    surface: str | None = None  # land | water | open_ocean | unknown (from Sentinel-2)
+    water_fraction: float | None = None
     days: list[RiskDay]
 
 
@@ -89,7 +91,10 @@ def activity_trend(last: int, prev: int) -> str:
     return "stable"
 
 
-def compute_risk(daily: dict, today: date, nearby_7d: int, ndvi: float | None) -> list[RiskDay]:
+NO_FUEL_SURFACES = ("water", "open_ocean")
+
+
+def compute_risk(daily: dict, today: date, nearby_7d: int, ndvi: float | None, surface: str | None = None) -> list[RiskDay]:
     """`daily` is Open-Meteo's daily block (includes past days for antecedent dryness)."""
     times = daily.get("time", [])
     tmax = daily.get("temperature_2m_max", [])
@@ -100,6 +105,8 @@ def compute_risk(daily: dict, today: date, nearby_7d: int, ndvi: float | None) -
     activity = _clamp(nearby_7d / 50)
     fuel = None if ndvi is None else fuel_dryness(ndvi)
     load = 1.0 if ndvi is None else fuel_load(ndvi)  # unknown fuel: don't gate (weather-only estimate)
+    if surface in NO_FUEL_SURFACES:  # lakes, rivers, sea: nothing to burn whatever the weather
+        fuel, load = None, 0.0
     weights = dict(WEIGHTS)
     if fuel is None:
         weights.pop("fuel")
@@ -122,7 +129,7 @@ def compute_risk(daily: dict, today: date, nearby_7d: int, ndvi: float | None) -
         }
         # No fuel, no fire: a hot, dry, windy desert is not fire danger.
         score = 100 * load * sum(comps[k] * wgt for k, wgt in weights.items()) / total_w
-        comps["fuel_load"] = None if ndvi is None else load
+        comps["fuel_load"] = None if (ndvi is None and surface not in NO_FUEL_SURFACES) else load
         out.append(
             RiskDay(
                 date=day,

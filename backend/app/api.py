@@ -1,31 +1,41 @@
+import asyncio
+import csv
+import hashlib
+import io
+import json
+import threading
+from collections import OrderedDict
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Literal
 
-import asyncio
-
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import delete, func, select
+from fastapi.responses import StreamingResponse
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.ingest.firms_client import FirmsError
 from app.ingest.sources import PUBLIC_REGIONS, SOURCES
-from app.models import AlertRow, AlertRuleRow, DetectionRow, EventRow, IngestRunRow
+from app.models import AlertRow, AlertRuleRow, DetectionRow, EventHistoryRow, EventLineageRow, EventPassRow, EventRow, IngestRunRow
 from app.schemas import (
     Alert,
     AlertRule,
     AlertRuleIn,
     CalendarDay,
+    EventHistoryEntry,
+    EventLineage,
+    EventPass,
     FireDetection,
     FireEvent,
     FireEventDetail,
     IngestReport,
     IngestRequest,
 )
-from app.services import queries
+from app.services import cells, queries
 from app.services.ndvi import CopernicusNdvi, NdviResult
+from app.services.alerts import deliver_webhooks, evaluate_rules
 from app.services.coverage import day_status
 from app.services.history import COUNTRY_BBOX, MAX_BACKFILL_DAYS, BackfillJob, BackfillRequest, run_backfill
 from app.services.pipeline import firms_client, run_ingest
@@ -89,6 +99,7 @@ def health(request: Request, session: SessionDep, settings: SettingsDep):
         # newest satellite observation in the database: how fresh "Latest" really is
         "latest_detection_at": (newest.replace(tzinfo=UTC) if (newest := session.scalar(select(func.max(DetectionRow.acquired_at)))) else None),
         "refresh_minutes": settings.ingest_interval_minutes if not settings.is_demo else 0,
+        "event_active_hours": settings.event_active_hours,
     }
 
 
@@ -113,12 +124,13 @@ def detection_filter(
     max_frp: float | None = None,
     daynight: Literal["D", "N"] | None = None,
     event_id: str | None = None,
+    include_static: Annotated[bool, Query(description="Include volcanoes, gas flares and offshore platforms")] = False,
     limit: Annotated[int, Query(ge=1, le=100000)] = 5000,
 ) -> queries.DetectionFilter:
     return queries.DetectionFilter(
         start=start, end=end, area=area, instruments=instrument, satellites=satellite,
         min_confidence=min_confidence, min_frp=min_frp, max_frp=max_frp, daynight=daynight,
-        event_id=event_id, limit=limit,
+        event_id=event_id, include_static=include_static, limit=limit,
     )
 
 
@@ -166,13 +178,16 @@ def event_filter(
     min_confidence_pct: Annotated[int | None, Query(ge=0, le=100)] = None,
     status: Literal["active", "inactive"] | None = None,
     instrument: Literal["MODIS", "VIIRS"] | None = None,
+    min_evidence: Annotated[Literal["single_detection", "single_pass", "multi_pass"] | None,
+                            Query(description="single_pass hides lone pixels; multi_pass keeps fires seen on 2+ overpasses")] = None,
+    lifecycle_state: Literal["active", "reactivated", "inactive", "archived"] | None = None,
     sort: Literal["recent", "area", "frp"] = "recent",
     limit: Annotated[int, Query(ge=1, le=10000)] = 1000,
 ) -> queries.EventFilter:
     return queries.EventFilter(
         start=start, end=end, area=area, min_area=min_area, max_area=max_area, min_frp=min_frp,
         min_detections=min_detections, min_confidence_pct=min_confidence_pct, status=status,
-        instrument=instrument, sort=sort, limit=limit,
+        instrument=instrument, min_evidence=min_evidence, lifecycle_state=lifecycle_state, sort=sort, limit=limit,
     )
 
 
@@ -190,13 +205,174 @@ def events_count(session: SessionDep, f: EventFilterDep):
     return {"count": queries.count_events(session, f)}
 
 
+def _canonical(session: Session, event_id: str) -> str:
+    cid = queries.resolve_event_id(session, event_id)
+    if cid is None:
+        raise HTTPException(404, "event not found")
+    return cid
+
+
 @router.get("/events/{event_id}", response_model=FireEventDetail)
 def get_event(event_id: str, session: SessionDep):
-    row = session.get(EventRow, event_id)
-    if not row:
+    """An event with its detections. An id that was merged or renamed resolves to the event that holds
+    its detections now (`resolved_from` = the id asked for), so old links and alerts keep working."""
+    cid = _canonical(session, event_id)
+    row = session.get(EventRow, cid)
+    dets = queries.query_detections(session, queries.DetectionFilter(event_id=cid, limit=50000))
+    data = FireEvent.model_validate(row).model_dump(exclude={"detected_footprint_km2", "burned_area_km2"})
+    return FireEventDetail(**data, detections=dets, resolved_from=event_id if cid != event_id else None)
+
+
+@router.get("/events/{event_id}/timeline", response_model=list[EventPass])
+def event_timeline(event_id: str, session: SessionDep):
+    """Whole-fire FRP per satellite overpass (instantaneous MW; MODIS and VIIRS are not cross-calibrated)."""
+    cid = _canonical(session, event_id)
+    return session.scalars(select(EventPassRow).where(EventPassRow.event_id == cid).order_by(EventPassRow.acquired_at)).all()
+
+
+@router.get("/events/{event_id}/history", response_model=list[EventHistoryEntry])
+def event_history(event_id: str, session: SessionDep):
+    """Every recorded change of this event and of the ids merged into it, oldest first."""
+    cid = queries.resolve_event_id(session, event_id) or event_id
+    ids = {cid, event_id} | set(session.scalars(select(EventLineageRow.old_id).where(EventLineageRow.new_id == cid)))
+    rows = session.scalars(select(EventHistoryRow).where(EventHistoryRow.event_id.in_(ids))
+                           .order_by(EventHistoryRow.at, EventHistoryRow.id)).all()
+    if not rows:
         raise HTTPException(404, "event not found")
-    dets = queries.query_detections(session, queries.DetectionFilter(event_id=event_id, limit=50000))
-    return FireEventDetail(**FireEvent.model_validate(row).model_dump(), detections=dets)
+    return rows
+
+
+@router.get("/events/{event_id}/lineage", response_model=list[EventLineage])
+def event_lineage(event_id: str, session: SessionDep):
+    """Lineage records naming this id: what it absorbed (new_id = id) and what it became (old_id = id)."""
+    return session.scalars(select(EventLineageRow).where((EventLineageRow.old_id == event_id) | (EventLineageRow.new_id == event_id))
+                           .order_by(EventLineageRow.at, EventLineageRow.id)).all()
+
+
+# ---------------------------------------------------------------------------- map tiles
+
+TILE_CACHE_MAX = 4096  # built tiles kept in memory (a tile is ~1-60 KB before gzip)
+_tile_lock = threading.Lock()
+
+
+@router.get("/tiles/meta")
+def tiles_meta(session: SessionDep):
+    """What the globe needs to know to reuse its tiles: they stay valid until `data_version` changes
+    (new detections were stored) or, for rolling "latest" windows, until the UTC `hour` changes."""
+    return {
+        "data_version": cells.data_version(session),
+        "hour": cells.epoch_hour(datetime.now(UTC)),
+        "tile_shift": cells.TILE_SHIFT,
+        "min_level": cells.MIN_LEVEL,
+        "max_cell_zoom": cells.MAX_CELL_ZOOM,
+        "point_zoom": cells.POINT_ZOOM,
+    }
+
+
+@router.get("/tiles/{kind}/{z}/{x}/{y}")
+def fire_tile(
+    kind: Literal["cells", "points"],
+    z: int,
+    x: int,
+    y: int,
+    request: Request,
+    session: SessionDep,
+    f: DetectionFilterDep,
+    ef: EventFilterDep,
+    hours: Annotated[int | None, Query(ge=1, le=24 * 400, description="rolling window back from now")] = None,
+):
+    """One map tile (geographic grid: zoom z has 2^(z+1) x 2^z tiles of 180/2^z degrees).
+
+    `cells` (z 0..7): 16 x 16 grouped markers, MODIS and VIIRS reported separately. `points`
+    (z = 7 only, ~150 km): the individual detections and fire events. Tiles are cached and carry an
+    ETag, so the browser re-downloads a tile only when its content changed.
+    """
+    if kind == "cells" and not 0 <= z <= cells.MAX_CELL_ZOOM:
+        raise HTTPException(422, f"cell tiles exist for zoom 0-{cells.MAX_CELL_ZOOM}")
+    if kind == "points" and z != cells.POINT_ZOOM:
+        raise HTTPException(422, f"point tiles exist for zoom {cells.POINT_ZOOM} only")
+    if not cells.valid_tile(z, x, y):
+        raise HTTPException(404, "no such tile")
+    h0, h1 = cells.resolve_hours(hours, f.start, f.end, datetime.now(UTC))
+    params = tuple(sorted((k, v) for k, v in request.query_params.multi_items() if k not in ("hours", "start", "end")))
+    key = (cells.data_version(session), kind, z, x, y, h0, h1, params)
+    cache: OrderedDict = request.app.state.tile_cache
+    with _tile_lock:
+        hit = cache.get(key)
+        if hit:
+            cache.move_to_end(key)
+    if hit is None:
+        start, end = cells.hour_start(h0), cells.hour_start(h1 + 1) - timedelta(microseconds=1)
+        f.start, f.end, ef.start, ef.end = start, end, start, end
+        if kind == "points":
+            data = cells.point_tile(session, x, y, f, ef)
+        elif z + cells.TILE_SHIFT <= cells.MAX_STORED_LEVEL and not cells.needs_raw(f):
+            data = cells.stored_cell_tile(session, z, x, y, h0, h1, f.min_confidence, f.include_static)
+        else:
+            data = cells.raw_cell_tile(session, z, x, y, f)
+        body = json.dumps(data, separators=(",", ":")).encode()
+        hit = (body, f'"{hashlib.sha1(body).hexdigest()[:20]}"')
+        with _tile_lock:
+            cache[key] = hit
+            while len(cache) > TILE_CACHE_MAX:
+                cache.popitem(last=False)
+    body, etag = hit
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}  # always revalidate; unchanged tiles cost a 304
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
+# ---------------------------------------------------------------------------- analysis export
+
+EXPORT_MAX_ROWS = 2_000_000
+
+
+@router.get("/export/{sensor}.csv")
+def export_sensor_csv(
+    sensor: Literal["modis", "viirs"],
+    request: Request,
+    start: datetime,
+    end: datetime,
+    bbox: Annotated[str | None, Query(description="west,south,east,north")] = None,
+    include_static: bool = False,
+):
+    """Detections of one sensor with that sensor's native field names (views modis_detections /
+    viirs_detections), streamed as CSV for offline analysis."""
+    try:
+        box = queries.parse_bbox(bbox)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if end < start or (end - start).days > 400:
+        raise HTTPException(422, "range must be at most 400 days and start <= end")
+    where = ["acquired_at >= :start", "acquired_at <= :end"]
+    args: dict = {"start": start.astimezone(UTC).replace(tzinfo=None), "end": end.astimezone(UTC).replace(tzinfo=None)}
+    if box:
+        w, s_, e, n = box
+        where.append("latitude BETWEEN :s AND :n")
+        where.append("(longitude BETWEEN :w AND :e)" if w <= e else "(longitude >= :w OR longitude <= :e)")
+        args.update(w=w, s=s_, e=e, n=n)
+    if not include_static:
+        where.append("static_kind IS NULL")
+    sql = text(f"SELECT * FROM {sensor}_detections WHERE {' AND '.join(where)} ORDER BY acquired_at LIMIT {EXPORT_MAX_ROWS}")
+    factory = request.app.state.session_factory
+
+    def rows():
+        with factory() as session:  # own session: the response outlives the request's dependencies
+            result = session.execute(sql, args)
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(result.keys())
+            for i, row in enumerate(result):
+                writer.writerow(row)
+                if i % 5000 == 4999:
+                    yield buf.getvalue()
+                    buf.seek(0)
+                    buf.truncate()
+            yield buf.getvalue()
+
+    name = f"firelens_{sensor}_{start:%Y%m%d}_{end:%Y%m%d}.csv"
+    return StreamingResponse(rows(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.get("/calendar", response_model=list[CalendarDay])
@@ -214,7 +390,7 @@ def list_rules(session: SessionDep):
 
 
 @router.post("/alerts/rules", response_model=AlertRule, status_code=201)
-def create_rule(rule: AlertRuleIn, session: SessionDep):
+def create_rule(rule: AlertRuleIn, session: SessionDep, request: Request, background: BackgroundTasks):
     bbox = [rule.west, rule.south, rule.east, rule.north]
     circle = [rule.center_lat, rule.center_lon, rule.radius_km]
     if any(v is not None for v in bbox) and None in bbox:
@@ -225,7 +401,23 @@ def create_rule(rule: AlertRuleIn, session: SessionDep):
         raise HTTPException(422, "webhook_url must be http(s)")
     row = AlertRuleRow(**rule.model_dump(), created_at=datetime.now(UTC).replace(tzinfo=None))
     session.add(row)
+    session.flush()
+    # Fires already burning in the zone alert right away; otherwise a new rule would stay silent
+    # until those fires next change (rules are evaluated on changed events during ingestion).
+    if None not in bbox:
+        zone = queries.Area(bbox=(rule.west, rule.south, rule.east, rule.north))
+    elif None not in circle:
+        zone = queries.Area(lat=rule.center_lat, lon=rule.center_lon, radius_km=rule.radius_km)
+    else:
+        zone = None
+    stmt = select(EventRow).where(EventRow.status == "active")
+    if zone:
+        stmt = zone.apply(stmt, EventRow.latitude, EventRow.longitude)
+    created = evaluate_rules(session, session.scalars(stmt).all(), rules=[row])
     session.commit()
+    hooks = [(Alert.model_validate(a), row.webhook_url) for a, _ in created if row.webhook_url]
+    if hooks:
+        background.add_task(deliver_webhooks, request.app.state.http, hooks)
     return row
 
 
@@ -265,12 +457,14 @@ async def get_risk(
 
     last, prev = await run_in_threadpool(_activity)
     ndvi = None
+    land = None
     ndvi_client: CopernicusNdvi | None = request.app.state.ndvi
     if ndvi_client:
         try:
-            ndvi = (await ndvi_client.mean_ndvi(lat, lon)).ndvi_mean
+            land = await ndvi_client.mean_ndvi(lat, lon)
+            ndvi = land.ndvi_mean
         except httpx.HTTPError:
-            ndvi = None  # fuel term is optional; degrade gracefully
+            land = None  # fuel term is optional; degrade gracefully
     return RiskForecast(
         latitude=lat,
         longitude=lon,
@@ -278,7 +472,9 @@ async def get_risk(
         nearby_detections_prev_7d=prev,
         activity_trend=activity_trend(last, prev),
         ndvi=ndvi,
-        days=compute_risk(daily, now.date(), last, ndvi),
+        surface=land.surface if land else None,
+        water_fraction=land.water_fraction if land else None,
+        days=compute_risk(daily, now.date(), last, ndvi, land.surface if land else None),
     )
 
 

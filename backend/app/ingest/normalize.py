@@ -44,6 +44,8 @@ VIIRS_CONFIDENCE: dict[str, tuple[ConfidenceLevel, int]] = {
 # VIIRS I4 saturates around 367 K; values at/above are flagged, not trusted as temperatures.
 VIIRS_I4_SATURATION_K = 367.0
 NOMINAL_PIXEL_KM = {"MODIS": 1.0, "VIIRS": 0.375}
+# FIRMS archive `type`: 0 presumed vegetation fire, 1 active volcano, 2 other static land source, 3 offshore
+STATIC_KIND = {1: "volcano", 2: "industrial", 3: "offshore"}
 NOMINAL_RESOLUTION_M = {"MODIS": 1000, "VIIRS": 375}
 
 
@@ -193,6 +195,7 @@ def normalize_row(row: Mapping[str, str], source: FirmsSource | None = None) -> 
         confidence_pct=conf_pct,
         confidence_level=conf_level,
         detection_type=int(det_type) if det_type is not None else None,
+        static_kind=STATIC_KIND.get(int(det_type)) if det_type is not None else None,
         version=version,
     )
 

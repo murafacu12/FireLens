@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 
 import httpx
@@ -9,7 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import func, select
 
-from app import models  # noqa: F401  (registers tables)
+from fastapi.concurrency import run_in_threadpool
+
+from app import migrations, models  # noqa: F401  (registers tables)
 from app.api import router
 from app.config import Settings, get_settings
 from app.db import Base, make_engine, make_session_factory
@@ -51,11 +54,19 @@ def create_app(settings: Settings | None = None, http_transport: httpx.AsyncBase
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         engine = make_engine(settings.database_url_effective)
-        Base.metadata.create_all(engine)  # TODO: Alembic migrations once the schema settles
+        # Never upgrade a database holding data unless explicitly allowed (FIRELENS_ALLOW_SCHEMA_UPGRADE).
+        # Checked before create_all, which would otherwise add the new tables.
+        pending = migrations.guard(engine, settings.allow_schema_upgrade)
+        if pending:
+            log.warning("upgrading the database (explicitly allowed): %s", "; ".join(pending))
+        Base.metadata.create_all(engine)  # creates missing tables; columns are handled by migrations
         app.state.settings = settings
         app.state.session_factory = make_session_factory(engine)
+        # Add new columns in place; rebuild fire events if the logic that builds them changed.
+        await run_in_threadpool(migrations.upgrade, engine, app.state.session_factory, settings)
         app.state.http = httpx.AsyncClient(headers={"User-Agent": "FireLens/0.2"}, transport=http_transport)
         app.state.jobs = {}
+        app.state.tile_cache = OrderedDict()  # built map tiles, keyed by data version
         app.state.seeding = False
         app.state.ndvi = (
             CopernicusNdvi(app.state.http, settings.copernicus_client_id, settings.copernicus_client_secret)

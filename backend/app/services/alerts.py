@@ -50,11 +50,26 @@ def rule_matches(rule: AlertRuleRow, ev: EventRow) -> bool:
     )
 
 
-def evaluate_rules(session: Session, events: Sequence[EventRow]) -> list[tuple[AlertRow, AlertRuleRow]]:
-    rules = session.scalars(select(AlertRuleRow).where(AlertRuleRow.enabled.is_(True))).all()
+def evaluate_rules(
+    session: Session, events: Sequence[EventRow], rules: Sequence[AlertRuleRow] | None = None
+) -> list[tuple[AlertRow, AlertRuleRow]]:
+    """Create alerts for (rule, event) pairs that match and haven't alerted before.
+    `rules` defaults to every enabled rule; events may be ORM rows or freshly built drafts."""
+    if rules is None:
+        rules = session.scalars(select(AlertRuleRow).where(AlertRuleRow.enabled.is_(True))).all()
     if not rules or not events:
         return []
     existing = {(r.rule_id, r.event_id) for r in session.execute(select(AlertRow.rule_id, AlertRow.event_id))}
+    # An alert raised for an event id that was later merged or renamed counts for its successor:
+    # the same fire must not alert twice just because its id changed.
+    from app.services.queries import resolve_event_id  # local import: queries imports models only
+
+    current = {}
+    for rule_id, event_id in list(existing):
+        if event_id not in current:
+            current[event_id] = resolve_event_id(session, event_id)
+        if current[event_id] and current[event_id] != event_id:
+            existing.add((rule_id, current[event_id]))
     now = datetime.now(UTC).replace(tzinfo=None)
     created = []
     for ev in events:

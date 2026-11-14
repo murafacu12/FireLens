@@ -15,31 +15,47 @@ TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/
 STATS_URL = "https://sh.dataspace.copernicus.eu/api/v1/statistics"
 CACHE_TTL_S = 24 * 3600
 
-# Scene Classification (SCL) classes excluded from the vegetation mean:
-# 0 no data, 1 saturated/defective, 3 cloud shadow, 6 water, 8-9 cloud, 10 cirrus, 11 snow.
-# Water matters: its NDVI is negative and pulled riverside/wetland means far below the vegetation's.
+# One request answers two questions about the 5 km box around the point:
+#   ndvi  - vegetation greenness of the LAND pixels (water returns NaN, which the statistics skip)
+#   water - share of cloud-free pixels that are water (Scene Classification class 6)
+# Excluded entirely (dataMask 0): 0 no data, 1 saturated/defective, 3 cloud shadow, 8-9 cloud,
+# 10 cirrus, 11 snow. Water used to be averaged in; its negative NDVI dragged riverside and
+# wetland values far below the vegetation's.
 EVALSCRIPT = """//VERSION=3
 function setup() {
   return {
     input: [{ bands: ["B04", "B08", "SCL", "dataMask"] }],
     output: [
       { id: "ndvi", bands: 1, sampleType: "FLOAT32" },
+      { id: "water", bands: 1, sampleType: "FLOAT32" },
       { id: "dataMask", bands: 1 }
     ]
   };
 }
 function evaluatePixel(s) {
-  var invalid = [0, 1, 3, 6, 8, 9, 10, 11].indexOf(s.SCL) !== -1;
+  var invalid = [0, 1, 3, 8, 9, 10, 11].indexOf(s.SCL) !== -1;
+  var water = s.SCL === 6;
   var ndvi = (s.B08 - s.B04) / (s.B08 + s.B04 + 1e-6);
-  return { ndvi: [ndvi], dataMask: [s.dataMask && !invalid ? 1 : 0] };
+  return { ndvi: [water ? NaN : ndvi], water: [water ? 1 : 0], dataMask: [s.dataMask && !invalid ? 1 : 0] };
 }"""
+
+WATER_SURFACE = 0.9  # at least this share of the box is water -> nothing to burn
+
+
+def _num(v) -> float | None:
+    """Statistics may come back as a number, None or the string "NaN"."""
+    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else None
 
 
 class NdviResult(BaseModel):
     latitude: float
     longitude: float
-    ndvi_mean: float | None
-    valid_fraction: float | None
+    ndvi_mean: float | None  # land pixels only
+    valid_fraction: float | None  # cloud-free share of the box
+    water_fraction: float | None = None  # share of cloud-free pixels that are water
+    # land | water (lake, river, coastal sea) | open_ocean (outside Sentinel-2's land/coast
+    # acquisitions: 30 days without a single image) | unknown (only clouds in 30 days)
+    surface: str = "unknown"
     interval_from: str | None
     interval_to: str | None
     source: str = "Copernicus Sentinel-2 L2A (CDSE Statistical API)"
@@ -75,7 +91,7 @@ class CopernicusNdvi:
         if hit and time.time() - hit[0] < CACHE_TTL_S:
             return hit[1]
         result = await self._query(lat, lon, half_size_km, days)
-        if result.ndvi_mean is not None:  # don't pin a cloudy miss for a whole day
+        if result.surface != "unknown":  # don't pin a cloudy miss for a whole day
             if len(self._cache) > 5000:
                 self._cache.clear()
             self._cache[key] = (time.time(), result)
@@ -107,19 +123,30 @@ class CopernicusNdvi:
         token = await self._access_token()
         resp = await self._http.post(STATS_URL, json=body, headers={"Authorization": f"Bearer {token}"}, timeout=60)
         resp.raise_for_status()
-        # Most recent interval with valid (cloud-free) pixels wins.
-        for interval in sorted(resp.json().get("data", []), key=lambda d: d["interval"]["from"], reverse=True):
-            stats = interval["outputs"]["ndvi"]["bands"]["B0"]["stats"]
-            samples = stats.get("sampleCount") or 0
-            valid = samples - (stats.get("noDataCount") or 0)
-            mean = stats.get("mean")
-            if valid > 0 and isinstance(mean, (int, float)) and math.isfinite(mean):
-                return NdviResult(
-                    latitude=lat,
-                    longitude=lon,
-                    ndvi_mean=round(mean, 4),
-                    valid_fraction=round(valid / samples, 3),
-                    interval_from=interval["interval"]["from"],
-                    interval_to=interval["interval"]["to"],
-                )
-        return NdviResult(latitude=lat, longitude=lon, ndvi_mean=None, valid_fraction=None, interval_from=None, interval_to=None)
+        data = resp.json().get("data", [])
+        empty = dict(latitude=lat, longitude=lon, ndvi_mean=None, valid_fraction=None, interval_from=None, interval_to=None)
+        if not data:
+            # Sentinel-2 revisits every land/coastal point every ~5 days: a month with no
+            # acquisition at all means the point is out at sea.
+            return NdviResult(**empty, water_fraction=1.0, surface="open_ocean")
+        # Most recent interval with cloud-free pixels wins.
+        for interval in sorted(data, key=lambda d: d["interval"]["from"], reverse=True):
+            outputs = interval["outputs"]
+            water_stats = outputs["water"]["bands"]["B0"]["stats"]
+            samples = water_stats.get("sampleCount") or 0
+            valid = samples - (water_stats.get("noDataCount") or 0)
+            if valid <= 0:
+                continue  # fully clouded interval
+            water = _num(water_stats.get("mean")) or 0.0
+            ndvi = _num(outputs["ndvi"]["bands"]["B0"]["stats"].get("mean"))
+            return NdviResult(
+                latitude=lat,
+                longitude=lon,
+                ndvi_mean=round(ndvi, 4) if ndvi is not None else None,
+                valid_fraction=round(valid / samples, 3),
+                water_fraction=round(water, 3),
+                surface="water" if water >= WATER_SURFACE else "land",
+                interval_from=interval["interval"]["from"],
+                interval_to=interval["interval"]["to"],
+            )
+        return NdviResult(**empty)  # only clouds for a month: unknown

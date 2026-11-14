@@ -6,20 +6,16 @@ import {
   CircleGeometry,
   CircleOutlineGeometry,
   Color,
-  ColorGeometryInstanceAttribute,
   Credit,
-  DistanceDisplayCondition,
   GeometryInstance,
   ImageryLayer,
   Ion,
   KeyboardEventModifier,
   LabelCollection,
-  LabelStyle,
   Math as CesiumMath,
   NearFarScalar,
   OpenStreetMapImageryProvider,
   type OrthographicOffCenterFrustum,
-  PerInstanceColorAppearance,
   PointPrimitiveCollection,
   Primitive,
   PrimitiveCollection,
@@ -31,13 +27,13 @@ import {
   ScreenSpaceEventType,
   Terrain,
   UrlTemplateImageryProvider,
-  VerticalOrigin,
-  HorizontalOrigin,
   Viewer,
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
-import type { AlertRule, CompactDetections, DetectionGrid, FireEvent } from "./api";
+import type { AlertRule, CompactDetections, FireEvent } from "./api";
+import { batch, instance, MARKER_HEIGHT_M, NO_DEPTH_TEST_WITHIN_M, RAMP, rampIndex } from "./render";
+import { FireTiles, type Lod, MAX_CELL_LEVEL, MIN_LEVEL, POINT_ZOOM, renderEvents, TILE_SHIFT } from "./tiles";
 
 export type BaseLayerId = "esri" | "osm" | "gibs";
 export type PickResult =
@@ -46,66 +42,19 @@ export type PickResult =
   | { kind: "point"; lat: number; lon: number }
   | { kind: "cell"; lat: number; lon: number; cellDeg: number; count: number };
 
-// Grouped-marker cell sizes (degrees). Snapping keeps cells stable while zooming slightly.
-const CELL_STEPS = [0.1, 0.25, 0.5, 1, 2, 4, 8];
-const CELL_PX = 45; // target on-screen spacing between bubbles
+const CELL_PX = 45; // target on-screen spacing between grouped markers
 
 const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
-// Markers sit slightly above the ellipsoid and skip depth testing only when the camera is
-// close, so they never z-fight with the surface yet stay hidden behind the far side of Earth.
-const MARKER_HEIGHT_M = 1000;
-const NO_DEPTH_TEST_WITHIN_M = 1_500_000;
 const GIBS_CREDIT = new Credit("Imagery: NASA EOSDIS GIBS");
 const ZONE_COLOR = Color.fromCssColorString("#38bdf8");
-const ACTIVE_COLOR = Color.fromCssColorString("#ff5a1f");
-const INACTIVE_COLOR = Color.fromCssColorString("#9a7b5c");
 
 function yesterday(): string {
   return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 }
 
-// FRP (MW) -> colour ramp yellow -> orange -> red -> magenta on a log scale (1..1000 MW).
-// Precomputed once: building 50k points must not allocate 50k Color objects.
-const RAMP_STEPS = 48;
-const RAMP_STOPS = ["#ffe14d", "#ff8a1f", "#e8261b", "#b0127a"].map((c) => Color.fromCssColorString(c));
-const RAMP: { solid: Color; faint: Color }[] = Array.from({ length: RAMP_STEPS }, (_, k) => {
-  const x = (k / (RAMP_STEPS - 1)) * (RAMP_STOPS.length - 1);
-  const i = Math.min(RAMP_STOPS.length - 2, Math.floor(x));
-  const c = Color.lerp(RAMP_STOPS[i], RAMP_STOPS[i + 1], x - i, new Color());
-  return { solid: c.withAlpha(0.95), faint: c.withAlpha(0.5) };
-});
-function rampIndex(frp: number | null): number {
-  const t = Math.min(1, Math.log10(Math.max(1, frp ?? 1)) / 3);
-  return Math.round(t * (RAMP_STEPS - 1));
-}
-const CLUSTER_HEIGHT_M = 5000; // bubbles float a bit higher than single points
-const CLUSTER_OUTLINE = Color.WHITE.withAlpha(0.8);
-function compactCount(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 10_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
-  return `${Math.round(n / 1000)}k`;
-}
 const VIIRS_OUTLINE = Color.WHITE.withAlpha(0.7);
 const MODIS_OUTLINE = Color.BLACK.withAlpha(0.8);
 const POINT_SCALE = new NearFarScalar(5e4, 1.8, 8e6, 0.7);
-const LABEL_RANGE = new DistanceDisplayCondition(0, 2_500_000);
-
-/** Batch many shapes into one draw call; geometry is built synchronously so it is
- * ready on the next requested frame (we render on demand, not every frame). */
-function batch(instances: GeometryInstance[], outline: boolean, pickable = true): Primitive | null {
-  if (!instances.length) return null;
-  return new Primitive({
-    geometryInstances: instances,
-    appearance: new PerInstanceColorAppearance({ flat: true, translucent: !outline }),
-    asynchronous: false,
-    // Decorative shapes (zones, radius ring) must not swallow clicks on the fires inside them.
-    allowPicking: pickable,
-  });
-}
-
-function instance(geometry: ConstructorParameters<typeof GeometryInstance>[0]["geometry"], color: Color, id?: string): GeometryInstance {
-  return new GeometryInstance({ geometry, id, attributes: { color: ColorGeometryInstanceAttribute.fromColor(color) } });
-}
 
 /** A named group of primitives that can be replaced and toggled as one layer. */
 class Layer {
@@ -113,7 +62,7 @@ class Layer {
   constructor(parent: PrimitiveCollection) {
     this.group = parent.add(new PrimitiveCollection());
   }
-  replace(...items: (Primitive | LabelCollection | PointPrimitiveCollection | null)[]): void {
+  replace(...items: (Primitive | LabelCollection | PointPrimitiveCollection | PrimitiveCollection | null)[]): void {
     this.group.removeAll(); // destroys previous primitives and frees GPU memory
     for (const item of items) if (item) this.group.add(item);
   }
@@ -126,13 +75,13 @@ export class Globe {
   readonly viewer: Viewer;
   private readonly baseLayers: Record<BaseLayerId, ImageryLayer>;
   private readonly ndviLayer: ImageryLayer;
-  private readonly detections: Layer;
-  private readonly clusters: Layer;
-  private readonly events: Layer;
+  private readonly detections: Layer; // focus mode: one fire's detections
+  private readonly events: Layer; // focus mode
   private readonly zones: Layer;
   private readonly pinned: Layer;
+  /** Fires everywhere else: tiles chosen by zoom level (see tiles.ts). */
+  readonly tiles: FireTiles;
   private detectionIds: string[] = [];
-  private grid: DetectionGrid | null = null;
 
   constructor(container: HTMLElement, onPick: (r: PickResult) => void) {
     const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
@@ -187,10 +136,12 @@ export class Globe {
 
     // Draw order: zones under events under detections under the pin.
     this.zones = new Layer(scene.primitives);
+    const tileEvents = scene.primitives.add(new PrimitiveCollection());
     this.events = new Layer(scene.primitives);
+    const tileFires = scene.primitives.add(new PrimitiveCollection());
     this.detections = new Layer(scene.primitives);
-    this.clusters = new Layer(scene.primitives);
     this.pinned = new Layer(scene.primitives);
+    this.tiles = new FireTiles(tileFires, tileEvents, () => this.redraw());
 
     this.viewer.camera.setView({ destination: Cartesian3.fromDegrees(-62, -25, 9_000_000) });
     this.setupZoomControls();
@@ -211,10 +162,8 @@ export class Globe {
         onPick({ kind: "detection", id: this.detectionIds[id] });
         return;
       }
-      if (typeof id === "string" && id.startsWith("cell:") && this.grid) {
-        const i = Number(id.slice(5));
-        const g = this.grid;
-        onPick({ kind: "cell", lat: g.lat[i], lon: g.lon[i], cellDeg: g.cell_deg, count: g.count[i] });
+      if (id && typeof id === "object" && "kind" in id) {
+        onPick(id as PickResult); // tile markers carry their own description
         return;
       }
       const cart = this.viewer.camera.pickEllipsoid(e.position, scene.globe.ellipsoid);
@@ -324,19 +273,34 @@ export class Globe {
     this.redraw();
   }
 
+  private firesOn = true;
+  private eventsOn = true;
+
   setDetectionsVisible(v: boolean): void {
+    this.firesOn = v;
     this.detections.show = v;
-    this.clusters.show = v; // grouped markers are the same data, zoomed out
+    this.tiles.setVisible(this.firesOn, this.eventsOn);
     this.redraw();
   }
 
-  /** Grid cell size for the current zoom, so bubbles end up ~CELL_PX apart on screen. */
-  cellSizeDeg(): number {
+  /** Grouped-marker cell size that puts bubbles ~CELL_PX apart on screen at the current zoom. */
+  private idealCellDeg(): number {
     const widthKm = (this.viewer.scene.mode === SceneMode.SCENE2D ? this.currentDistance() : this.currentDistance() * 1.15) / 1000;
     const cellsAcross = Math.max(4, this.viewer.canvas.clientWidth / CELL_PX);
-    const ideal = widthKm / cellsAcross / 111;
-    // nearest step on a log scale (rounding up made cells up to 2x too coarse)
-    return CELL_STEPS.reduce((best, s) => (Math.abs(Math.log(s / ideal)) < Math.abs(Math.log(best / ideal)) ? s : best));
+    return widthKm / cellsAcross / 111;
+  }
+
+  /** Level of detail for the current camera: which tile zoom to draw, and as what.
+   * Cells halve in size at each level (180 / 2^level degrees); a tile is 16 x 16 of them. */
+  lod(bbox: [number, number, number, number]): Lod {
+    let level = Math.round(Math.log2(180 / this.idealCellDeg()));
+    if (level > MAX_CELL_LEVEL && FireTiles.count(bbox, POINT_ZOOM) <= FireTiles.limits.MAX_POINT_TILES) {
+      return { kind: "points", z: POINT_ZOOM, cellDeg: null };
+    }
+    level = Math.min(MAX_CELL_LEVEL, Math.max(MIN_LEVEL, level));
+    // A tilted view to the horizon covers a lot of ground: use coarser cells rather than 100s of tiles.
+    while (level > MIN_LEVEL && FireTiles.count(bbox, level - TILE_SHIFT) > FireTiles.limits.MAX_TILES) level--;
+    return { kind: "cells", z: level - TILE_SHIFT, cellDeg: 180 / 2 ** level };
   }
 
   /** Call `fn` once the camera stops moving (after drags, zooms and flights). */
@@ -348,51 +312,10 @@ export class Globe {
     });
   }
 
-  /** Zoomed-out view: one bubble per cell, sized by count, coloured by its strongest fire.
-   * Pass null to clear (zoomed-in view shows individual detections instead). */
-  showClusters(grid: DetectionGrid | null): void {
-    this.grid = grid;
-    if (!grid || grid.cells === 0) {
-      this.clusters.replace();
-      this.redraw();
-      return;
-    }
-    const bubbles = new PointPrimitiveCollection();
-    const labels = new LabelCollection();
-    for (let i = 0; i < grid.cells; i++) {
-      const n = grid.count[i];
-      const size = Math.min(34, 8 + 3 * Math.log2(n)); // capped below CELL_PX so neighbours rarely overlap
-      const position = Cartesian3.fromDegrees(grid.lon[i], grid.lat[i], CLUSTER_HEIGHT_M);
-      bubbles.add({
-        id: `cell:${i}`,
-        position,
-        pixelSize: size,
-        color: RAMP[rampIndex(grid.max_frp[i])].solid.withAlpha(0.82),
-        outlineColor: CLUSTER_OUTLINE,
-        outlineWidth: 1.5,
-        disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
-      });
-      if (size >= 17) {
-        labels.add({
-          position,
-          text: compactCount(n),
-          font: "600 11px Inter, system-ui, sans-serif",
-          fillColor: Color.WHITE,
-          outlineColor: Color.BLACK.withAlpha(0.85),
-          outlineWidth: 3,
-          style: LabelStyle.FILL_AND_OUTLINE,
-          verticalOrigin: VerticalOrigin.CENTER,
-          horizontalOrigin: HorizontalOrigin.CENTER,
-          disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
-        });
-      }
-    }
-    this.clusters.replace(bubbles, labels);
-    this.redraw();
-  }
-
   setEventsVisible(v: boolean): void {
+    this.eventsOn = v;
     this.events.show = v;
+    this.tiles.setVisible(this.firesOn, this.eventsOn);
     this.redraw();
   }
 
@@ -423,34 +346,9 @@ export class Globe {
     this.redraw();
   }
 
+  /** Focus mode: one fire's footprint (every other fire comes from the tiles). */
   showEvents(events: FireEvent[]): void {
-    const fills: GeometryInstance[] = [];
-    const lines: GeometryInstance[] = [];
-    const labels = new LabelCollection();
-    for (const ev of events) {
-      const active = ev.status === "active";
-      const color = active ? ACTIVE_COLOR : INACTIVE_COLOR;
-      const center = Cartesian3.fromDegrees(ev.longitude, ev.latitude);
-      const radius = Math.max(400, Math.sqrt(ev.area_km2 / Math.PI) * 1000);
-      fills.push(instance(new CircleGeometry({ center, radius, height: 0 }), color.withAlpha(active ? 0.28 : 0.18), ev.id));
-      lines.push(instance(new CircleOutlineGeometry({ center, radius, height: 0 }), color, ev.id));
-      if (ev.area_km2 >= 1) {
-        labels.add({
-          position: Cartesian3.fromDegrees(ev.longitude, ev.latitude, MARKER_HEIGHT_M),
-          text: `${ev.area_km2.toFixed(1)} km²`,
-          font: "12px Inter, system-ui, sans-serif",
-          fillColor: Color.WHITE,
-          outlineColor: Color.BLACK,
-          outlineWidth: 3,
-          style: LabelStyle.FILL_AND_OUTLINE,
-          verticalOrigin: VerticalOrigin.BOTTOM,
-          pixelOffset: new Cartesian2(0, -10),
-          distanceDisplayCondition: LABEL_RANGE,
-          disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
-        });
-      }
-    }
-    this.events.replace(batch(fills, false), batch(lines, true), labels);
+    this.events.replace(events.length ? renderEvents(events, null) : null);
     this.redraw();
   }
 

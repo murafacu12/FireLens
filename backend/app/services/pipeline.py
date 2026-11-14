@@ -1,4 +1,4 @@
-"""Ingestion orchestration: fetch -> normalize -> store -> rebuild events -> alerts."""
+"""Ingestion orchestration: fetch -> normalize -> store -> zoom pyramid + events -> alerts."""
 
 import json
 import logging
@@ -16,8 +16,9 @@ from app.ingest.sources import PUBLIC_REGION_BBOX, PUBLIC_WINDOW_HOURS, get_sour
 from app.models import IngestRunRow
 from app.schemas import Alert, FireDetection, IngestReport, IngestRequest, SourceReport
 from app.services.alerts import deliver_webhooks, evaluate_rules
+from app.services.cells import bump_data_version, epoch_hour, refresh_cells
 from app.services.coverage import WORLD, BBox, days_between, record_coverage
-from app.services.store import rebuild_events, refresh_event_status, upsert_detections
+from app.services.store import cluster_params, flag_static_sources, rebuild_events, refresh_event_status, upsert_detections
 
 log = logging.getLogger(__name__)
 
@@ -38,26 +39,29 @@ def persist(
     report: IngestReport,
     coverage: list[Coverage] | None = None,
 ) -> list[tuple[Alert, str]]:
-    """Store detections, rebuild the events they touch, evaluate alert rules, and record what was
-    fetched (same transaction, so coverage never claims data that wasn't stored). Returns webhooks."""
+    """Store detections, update the map pyramid and the events they touch, evaluate alert rules, and
+    record what was fetched (one transaction, so coverage never claims data that wasn't stored).
+    Returns webhooks to deliver."""
     with factory() as session:
-        window = upsert_detections(session, detections)
+        seeds = upsert_detections(session, detections)  # only new / archive-upgraded rows
+        report.new += len(seeds)
         for days, bbox, source in coverage or []:
             record_coverage(session, days, bbox, source)
         alerts_out: list[tuple[Alert, str]] = []
-        if window:
-            events = rebuild_events(
-                session,
-                window,
-                settings.cluster_tolerance_km,
-                settings.cluster_max_gap_hours,
-                settings.event_active_hours,
-            )
+        if seeds:
+            # New archive rows can reveal gas flares/platforms that older NRT detections sit on:
+            # those get flagged and their neighbourhoods rebuilt too.
+            seeds += flag_static_sources(session)
+            # Map tiles: only the hours that received data are re-summed; the version tells
+            # browsers and the tile cache that tiles may have changed.
+            refresh_cells(session, {epoch_hour(sd.t) for sd in seeds})
+            bump_data_version(session)
+            events = rebuild_events(session, seeds, **cluster_params(settings))
             report.events_rebuilt += len(events)
             created = evaluate_rules(session, events)
             report.alerts_triggered += len(created)
             alerts_out = [(Alert.model_validate(a), r.webhook_url) for a, r in created if r.webhook_url]
-        refresh_event_status(session, settings.event_active_hours)
+        refresh_event_status(session, settings.event_active_hours, archive_days=settings.event_archive_days)
         report.stored += len(detections)
         session.add(
             IngestRunRow(

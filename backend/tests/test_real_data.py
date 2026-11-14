@@ -124,6 +124,7 @@ def make_client(tmp_path, **overrides):
     fake = FakeFirms()
     settings = Settings(
         _env_file=None,  # never pick up the developer's real keys from .env
+        public_region=overrides.pop("public_region", "South_America"),  # the fixtures are South American
         database_url=f"sqlite:///{tmp_path / 'live.db'}", demo_mode=False, ingest_interval_minutes=0,
         firms_request_pause_s=0, **overrides,
     )
@@ -266,3 +267,33 @@ def test_backfill_marks_its_days_loaded(tmp_path):
         # a much bigger view around it is only partially loaded
         wide = client.get("/api/history/coverage", params={**params, "bbox": "-80,-50,-40,-10"}).json()
         assert {d["status"] for d in wide["days"]} == {"partial"}
+
+
+def test_firms_client_retries_network_failures_but_not_firms_answers(monkeypatch):
+    import app.ingest.firms_client as fc
+
+    monkeypatch.setattr(fc, "RETRY_BACKOFF_S", 0)
+    calls = {"n": 0}
+
+    def flaky(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("connection dropped mid-download", request=request)
+        return httpx.Response(200, text=J1)
+
+    async def run(handler, key=None):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await fc.FirmsClient(http, key, "https://firms.example").fetch_public_feed("VIIRS_NOAA20_NRT", "Global", "24h")
+
+    assert asyncio.run(run(flaky)).startswith("latitude")
+    assert calls["n"] == 2  # one failure, one retry
+
+    calls["n"] = 0
+
+    def bad_key(request):
+        calls["n"] += 1
+        return httpx.Response(400, text="Invalid MAP_KEY.")
+
+    with pytest.raises(fc.FirmsError):
+        asyncio.run(run(bad_key))
+    assert calls["n"] == 1  # FIRMS' own answer is final: no retry

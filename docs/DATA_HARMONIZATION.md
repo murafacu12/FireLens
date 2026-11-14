@@ -58,11 +58,26 @@ Event metrics:
 
 | Metric | Definition |
 |---|---|
-| `area_km2` | Union of pixel footprints on a 250 m grid over the event's life. It uses only **VIIRS** pixels when any exist, so coarse MODIS pixels don't inflate it and overlapping sensors aren't double counted. This is the *active-fire footprint*, **not burned area**. |
+| `area_km2`, `area_basis` | Union of the detections' **nominal** pixels (VIIRS 375 m, MODIS 1 km squares) on a 125 m grid over the event's life. The nominal size is used, not the actual scan × track footprint, because the footprint grows with viewing angle (MODIS 1 → 9.6 km², VIIRS 0.14 → 0.62 km²), so the same fire would measure differently depending on where it sat in the swath. Only **VIIRS** pixels are used when any exist (`area_basis = viirs_375m`); MODIS-only events are flagged `modis_1km` (coarse, shown as ≈). This is the *active-fire footprint at sensor resolution*, **not burned area**. |
 | `max_frp_mw`, `total_frp_mw` | Max and sum of FRP across all sensors. |
 | centroid | FRP-weighted mean position, which sits on the most intense part of the fire. |
 | `status` | `active` if last seen within `event_active_hours` (24 h). |
 | `modis_count`, `viirs_count` | How much each sensor contributed. |
+
+## Non-vegetation heat sources
+
+The FIRMS archive (SP) labels each pixel with `type`: 0 vegetation fire, 1 active volcano,
+2 other static land source (gas flares, plants, refineries), 3 offshore (platforms). This is
+stored as `static_kind` (`volcano` / `industrial` / `offshore`). NRT data carries no label, so
+the same gas flare shows up as a "fire" every night. FireLens learns the labelled sites (~0.5 km
+cells) from the archive and flags unlabelled NRT detections within ~1 km of them. The archive's
+own verdict on a pixel always wins.
+
+Flagged detections are kept, but they never join fire events or trigger alerts, and they are
+hidden from the map, counts, calendar and fire-danger activity unless asked for
+(`include_static=true`, Layers → "Non-fire heat sources"). On the first real dataset (Argentina,
+one month of archive) this learned 110 sites and flagged 2,341 NRT detections, mostly around
+refineries and oil fields.
 
 ## Known limitations / next steps
 
@@ -70,3 +85,6 @@ Event metrics:
 * **FRP across sensors:** VIIRS FRP per pixel is lower because pixels are smaller. Compare *event totals*, not per-pixel values. Inter-sensor FRP calibration (published regressions) is a candidate improvement.
 * **Antimeridian:** bbox filters handle it. Clustering and area treat ±180° as an edge (rare for fires).
 * **Burned area:** should come from MODIS MCD64A1 or Sentinel-2 dNBR, not from active-fire footprints.
+* **Static sites are only as complete as the archive loaded:** a flare in a region with no SP history
+  loaded yet is not known. Loading a month of archive for a region teaches FireLens its flares.
+  A persistence heuristic (the same 375 m cell burning on many separate days) could find the rest.

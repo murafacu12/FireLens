@@ -61,7 +61,62 @@ def test_unknown_ndvi_falls_back_to_weather_only():
     assert day.components.fuel is None and day.components.fuel_load is None and day.score > 0
 
 
-def test_ndvi_evalscript_masks_water_and_clouds():
+def test_ndvi_evalscript_separates_water_from_land_and_masks_clouds():
     from app.services.ndvi import EVALSCRIPT
 
-    assert "[0, 1, 3, 6, 8, 9, 10, 11]" in EVALSCRIPT
+    assert "[0, 1, 3, 8, 9, 10, 11]" in EVALSCRIPT  # clouds, shadow, snow, bad pixels
+    assert "water ? NaN : ndvi" in EVALSCRIPT  # land-only NDVI
+    assert 'id: "water"' in EVALSCRIPT  # water share as its own statistic
+
+
+def test_water_and_open_ocean_have_no_fire_danger():
+    for surface in ("water", "open_ocean"):
+        day = compute_risk(HOT_DRY_WINDY, date(2026, 11, 14), nearby_7d=0, ndvi=None, surface=surface)[0]
+        assert day.score == 0 and day.components.fuel_load == 0
+    coast = compute_risk(HOT_DRY_WINDY, date(2026, 11, 14), nearby_7d=0, ndvi=0.3, surface="land")[0]
+    assert coast.score > 0
+
+
+def _stats(mean, samples=100, nodata=0):
+    return {"bands": {"B0": {"stats": {"mean": mean, "sampleCount": samples, "noDataCount": nodata}}}}
+
+
+def _copernicus(stats_body):
+    import httpx
+
+    def handler(request):
+        if "openid-connect/token" in str(request.url):
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 600})
+        return httpx.Response(200, json=stats_body)
+
+    return httpx.MockTransport(handler)
+
+
+def _query(stats_body):
+    import asyncio
+
+    import httpx
+
+    from app.services.ndvi import CopernicusNdvi
+
+    async def run():
+        async with httpx.AsyncClient(transport=_copernicus(stats_body)) as http:
+            return await CopernicusNdvi(http, "id", "secret").mean_ndvi(-35.0, -50.0)
+
+    return asyncio.run(run())
+
+
+def test_ndvi_surface_classification_from_statistics():
+    # open Atlantic: Sentinel-2 never images it -> no intervals at all
+    ocean = _query({"data": [], "status": "OK"})
+    assert ocean.surface == "open_ocean" and ocean.ndvi_mean is None
+    # a lake: every cloud-free pixel is water, land NDVI is NaN
+    interval = {"from": "2026-11-09T00:00:00Z", "to": "2026-11-14T00:00:00Z"}
+    lake = _query({"data": [{"interval": interval, "outputs": {"ndvi": _stats("NaN"), "water": _stats(0.97)}}]})
+    assert lake.surface == "water" and lake.ndvi_mean is None and lake.water_fraction == 0.97
+    # riverbank: mostly water but the land part has real vegetation
+    bank = _query({"data": [{"interval": interval, "outputs": {"ndvi": _stats(0.556), "water": _stats(0.81)}}]})
+    assert bank.surface == "land" and bank.ndvi_mean == 0.556
+    # a month of clouds only: unknown, not "water"
+    cloudy = _query({"data": [{"interval": interval, "outputs": {"ndvi": _stats(None, nodata=100), "water": _stats(None, nodata=100)}}]})
+    assert cloudy.surface == "unknown"

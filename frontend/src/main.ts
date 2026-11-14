@@ -1,21 +1,21 @@
 import "./styles.css";
 
-import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health } from "./api";
-import { closeDetails, showDetection, showEvent, showPoint, wireDetails } from "./details";
+import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health, type Params } from "./api";
+import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
 
 const filtersForm = $<HTMLFormElement>("#filters");
 const MAX_ZONE_DEG = 40; // an alert zone taken from a zoomed-out view would cover half the planet
-const MAX_POINTS = 50_000; // compact payload + batched points keep this cheap
-const DETAIL_MAX = 20_000; // above this many detections in view, show grouped markers instead
+const MAX_POINTS = 50_000; // focus mode: one fire's complete history
 let picking = false;
 let focusEventId: string | null = null;
 
 const globe = new Globe($("#globe"), onPick);
 if (import.meta.env.DEV) (window as unknown as { __globe: Globe }).__globe = globe; // debugging aid
-let booted = false; // camera-driven refreshes start after the first load, so startup queries run once
-globe.onCameraSettled(() => booted && void refresh()); // the map shows what's in view, at a density that fits it
+let booted = false; // camera-driven updates start after the first load, so startup queries run once
+// Moving or zooming only asks for tiles the camera hasn't loaded yet (see tiles.ts); nothing else reloads.
+globe.onCameraSettled(() => booted && updateView());
 
 // ---------------------------------------------------------------- picking
 function onPick(r: PickResult): void {
@@ -59,44 +59,33 @@ async function openEvent(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------- filters
-function readFilters() {
+/** The tile query: everything that changes what a tile contains. The view (bbox) is not part of it —
+ * tiles have fixed positions — and neither are the sensors: tiles carry MODIS and VIIRS apart. */
+function tileParams(): Params {
   const f = new FormData(filtersForm);
   const s = (k: string) => (f.get(k) as string | null)?.trim() || undefined;
-  const { start, end } = timeRange();
-  const area: Record<string, string | undefined> = {};
-  // The map always loads what the camera sees; a point + radius narrows it further.
-  const bbox = globe.viewBbox();
-  if (bbox) area.bbox = bbox.join(",");
-  if (s("lat") && s("lon") && s("radius_km")) {
-    Object.assign(area, { lat: s("lat"), lon: s("lon"), radius_km: s("radius_km") });
-  }
-  const instruments = f.getAll("instrument") as string[];
+  const satellites = f.getAll("satellite") as string[];
+  const time: Params = timeMode === "latest" ? { hours: latestHours } : timeRange();
   return {
-    common: {
-      start,
-      end,
-      ...area,
-    },
-    detections: {
-      instrument: instruments.length === 2 ? undefined : instruments,
-      satellite: (f.getAll("satellite") as string[]).length ? (f.getAll("satellite") as string[]) : undefined,
-      min_confidence: s("min_confidence"),
-      daynight: s("daynight"),
-      min_frp: s("min_frp"),
-      max_frp: s("max_frp"),
-    },
-    events: {
-      instrument: instruments.length === 1 ? instruments[0] : undefined,
-      min_area: s("min_area"),
-      max_area: s("max_area"),
-      min_detections: s("min_detections"),
-      status: s("status"),
-      min_frp: s("min_frp"),
-    },
-    noSensor: instruments.length === 0,
+    ...time,
+    ...(s("lat") && s("lon") && s("radius_km") ? { lat: s("lat"), lon: s("lon"), radius_km: s("radius_km") } : {}),
+    satellite: satellites.length ? satellites : undefined,
+    min_confidence: s("min_confidence"),
+    daynight: s("daynight"),
+    min_frp: s("min_frp"),
+    max_frp: s("max_frp"),
+    include_static: $<HTMLInputElement>("#lyr-static").checked || undefined,
+    min_area: s("min_area"),
+    max_area: s("max_area"),
+    min_detections: s("min_detections"),
+    status: s("status"),
   };
 }
 
+function sensors() {
+  const on = new FormData(filtersForm).getAll("instrument");
+  return { viirs: on.includes("VIIRS"), modis: on.includes("MODIS") };
+}
 
 // ---------------------------------------------------------------- time: Latest vs History
 type TimeMode = "latest" | "history";
@@ -155,7 +144,7 @@ $("#fetch-latest").addEventListener("click", async (e) => {
     toast(`NASA FIRMS: ${report.stored.toLocaleString()} detections refreshed${failed.length ? ` (failed: ${failed.join(", ")})` : ""}.`,
       failed.length ? "error" : "info");
     await loadHealth();
-    await refresh();
+    await syncEpoch();
   } catch (err) {
     toast(`Fetch failed: ${(err as Error).message}`, "error");
   } finally {
@@ -207,7 +196,7 @@ window.setInterval(renderFreshness, 30_000);
 window.setInterval(async () => {
   if (!booted || timeMode !== "latest" || document.hidden) return;
   await loadHealth().catch(() => undefined);
-  await refresh();
+  await syncEpoch(); // tiles are re-checked only if new data arrived or the hour rolled over
 }, AUTO_REFRESH_MS);
 
 // ---------------------------------------------------------------- history: load missing days automatically
@@ -348,60 +337,109 @@ $("#coverage-load").addEventListener("click", async () => {
 });
 
 const NO_DETECTIONS = { count: 0, id: [], lat: [], lon: [], frp: [], conf: [], viirs: [], t: [] };
-let refreshSeq = 0; // a newer refresh (e.g. the camera moved again) discards older responses
+let refreshSeq = 0; // a newer refresh discards older responses
+let eventsInView = 0;
 
+/** Server data epoch: tiles validated in an older epoch are re-checked (ETag) when shown. */
+async function syncEpoch(): Promise<void> {
+  try {
+    const meta = await api.tilesMeta();
+    globe.tiles.setEpoch(timeMode === "latest" ? `${meta.data_version}:${meta.hour}` : `${meta.data_version}`);
+  } catch {
+    /* keep the current tiles */
+  }
+}
+
+let errorShown = 0;
+globe.tiles.onError = (msg) => {
+  if (Date.now() - errorShown < 10_000) return; // one toast for a burst of failed tiles
+  errorShown = Date.now();
+  toast(`Failed to load map tiles: ${msg}`, "error");
+};
+let statsTimer: number | undefined;
+globe.tiles.onChange = () => {
+  // a timer, not requestAnimationFrame: rAF is paused in background tabs and the stats went stale
+  window.clearTimeout(statsTimer);
+  statsTimer = window.setTimeout(renderTileStats, 50);
+};
+let currentLod: ReturnType<typeof globe.lod> | null = null;
+
+function renderTileStats(): void {
+  if (focusEventId) return;
+  const bbox = globe.viewBbox();
+  if (!bbox || !currentLod) return renderStats(0, eventsInView);
+  const st = globe.tiles.stats(bbox);
+  const note = st.loading
+    ? `Loading ${st.loading} tile${st.loading > 1 ? "s" : ""}…`
+    : currentLod.kind === "cells"
+      ? `Grouped in ${fmtCell(currentLod.cellDeg!)} cells · zoom in for individual fires`
+      : st.truncated ? "Very dense area: showing the strongest detections per tile" : "";
+  renderStats(st.detections, eventsInView, note, currentLod.kind === "cells");
+}
+
+const fmtCell = (deg: number) => (deg >= 1 ? `${+deg.toFixed(2)}°` : `${Math.round(deg * 111)} km`);
+
+/** Camera moved or zoomed: pick the level of detail and show its tiles. Only tiles never loaded
+ * for the current filters are requested. */
+function updateView(): void {
+  if (focusEventId) return;
+  const bbox = globe.viewBbox();
+  if (!bbox) return;
+  currentLod = globe.lod(bbox);
+  globe.tiles.view(currentLod, bbox);
+  void countEvents(bbox);
+  void checkCoverage();
+}
+
+async function countEvents(bbox: [number, number, number, number]): Promise<void> {
+  const seq = refreshSeq;
+  const p = tileParams();
+  const { hours, ...rest } = p;
+  const time = hours ? { start: new Date(Date.now() - Number(hours) * 3_600_000).toISOString() } : {};
+  try {
+    const sens = sensors();
+    if (!sens.viirs && !sens.modis) eventsInView = 0;
+    else {
+      const instrument = sens.viirs && sens.modis ? undefined : sens.viirs ? "VIIRS" : "MODIS";
+      const r = await api.eventsCount({ ...rest, ...time, bbox: bbox.join(","), instrument, satellite: undefined, daynight: undefined, include_static: undefined, max_frp: undefined });
+      if (seq !== refreshSeq) return;
+      eventsInView = r.count;
+    }
+    renderTileStats();
+  } catch {
+    /* the count is informative only */
+  }
+}
+
+/** Filters, time window or mode changed: switch the tile query (tiles of earlier queries stay cached). */
 async function refresh(): Promise<void> {
   const seq = ++refreshSeq;
-  const f = readFilters();
-  if (f.noSensor) {
-    globe.showClusters(null);
-    globe.showDetections(NO_DETECTIONS);
-    globe.showEvents([]);
-    renderStats(0, 0);
-    return;
-  }
   try {
     if (focusEventId) {
       // Focus mode shows one fire's complete history, regardless of the view and filters.
+      globe.tiles.hideAll();
       const dets = await api.detectionsCompact({ event_id: focusEventId, limit: MAX_POINTS });
       if (seq !== refreshSeq) return;
-      globe.showClusters(null);
       globe.showDetections(dets);
       globe.showEvents([]);
       renderStats(dets.count, 1);
       return;
     }
-    // The grid is cheap and exact: it decides between grouped markers and individual points.
-    const cell = globe.cellSizeDeg();
-    const [grid, events] = await Promise.all([
-      api.grid({ ...f.common, ...f.detections, cell_deg: cell }),
-      api.eventsCount({ ...f.common, ...f.events }),
-    ]);
+    globe.showDetections(NO_DETECTIONS);
+    globe.showEvents([]);
+    globe.tiles.setQuery(tileParams());
+    globe.tiles.setSensors(sensors());
+    await syncEpoch();
     if (seq !== refreshSeq) return;
-    if (grid.total <= DETAIL_MAX) {
-      const [dets, eventList] = await Promise.all([
-        api.detectionsCompact({ ...f.common, ...f.detections, limit: DETAIL_MAX }),
-        api.events({ ...f.common, ...f.events, limit: 5000 }),
-      ]);
-      if (seq !== refreshSeq) return;
-      globe.showClusters(null);
-      globe.showDetections(dets);
-      globe.showEvents(eventList);
-    } else {
-      globe.showDetections(NO_DETECTIONS);
-      globe.showEvents([]);
-      globe.showClusters(grid);
-    }
-    renderStats(grid.total, events.count, grid.total > DETAIL_MAX ? `Grouped in ${cell}° cells · zoom in for individual fires` : "");
-    if (seq === refreshSeq) void checkCoverage();
+    updateView();
   } catch (err) {
     toast(`Failed to load data: ${(err as Error).message}`, "error");
   }
 }
 
-function renderStats(dets: number, events: number, note = ""): void {
+function renderStats(dets: number, events: number, note = "", approx = false): void {
   $("#stats").innerHTML = `
-    <div><b>${dets.toLocaleString()}</b><span>detections in view</span></div>
+    <div><b>${approx && dets ? "≈ " : ""}${dets.toLocaleString()}</b><span>detections in view</span></div>
     <div><b>${events.toLocaleString()}</b><span>fire events</span></div>
     ${focusEventId ? `<button type="button" id="clear-focus" class="secondary small">Show all</button>` : ""}
     ${note ? `<p class="stats-note">${esc(note)}</p>` : ""}`;
@@ -410,6 +448,14 @@ function renderStats(dets: number, events: number, note = ""): void {
     void refresh();
   });
 }
+
+filtersForm.querySelectorAll<HTMLInputElement>('input[name="instrument"]').forEach((box) =>
+  box.addEventListener("change", () => {
+    globe.tiles.setSensors(sensors()); // redraw from memory: tiles carry MODIS and VIIRS separately
+    const bbox = globe.viewBbox();
+    if (bbox && !focusEventId) void countEvents(bbox);
+  }),
+);
 
 filtersForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -457,6 +503,7 @@ toggle("#lyr-detections", (v) => globe.setDetectionsVisible(v));
 toggle("#lyr-events", (v) => globe.setEventsVisible(v));
 toggle("#lyr-zones", (v) => globe.setZonesVisible(v));
 toggle("#lyr-ndvi", (v) => globe.setNdviVisible(v));
+toggle("#lyr-static", () => void refresh());
 
 // ---------------------------------------------------------------- calendar
 let calMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
@@ -498,7 +545,7 @@ $("#calendar").addEventListener("click", async (e) => {
     $("#cal-events").innerHTML = events.length
       ? events.map((ev) => `<li><a href="#" data-event="${esc(ev.id)}">
           <b>${fmtNum(ev.area_km2, 2)} km²</b> · ${ev.detection_count} det. · max ${fmtNum(ev.max_frp_mw, 0)} MW
-          <small>${ev.latitude.toFixed(2)}, ${ev.longitude.toFixed(2)} · <span class="pill ${ev.status}">${ev.status}</span></small></a></li>`).join("")
+          <small>${ev.latitude.toFixed(2)}, ${ev.longitude.toFixed(2)} · ${statePill(ev)}</small></a></li>`).join("")
       : '<li class="empty">No fire events that day.</li>';
   } catch (err) {
     toast((err as Error).message, "error");
@@ -700,6 +747,7 @@ const SOURCE_BADGE: Record<Health["data_source"], [string, string]> = {
 
 async function loadHealth(): Promise<void> {
   health = await api.health();
+  if (health.event_active_hours) setActiveHours(health.event_active_hours);
   const badge = $("#mode-badge");
   const [label, title] = SOURCE_BADGE[health.data_source];
   badge.textContent = health.seeding ? "LOADING REAL DATA…" : label;

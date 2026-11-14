@@ -8,7 +8,7 @@ from sqlalchemy import Integer, Select, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.ingest.clustering import haversine_km
-from app.models import DetectionRow, EventRow
+from app.models import DetectionRow, EventLineageRow, EventRow, FireCellRow
 from app.schemas import CONFIDENCE_ORDER, CalendarDay, FireDetection, FireEvent, to_naive_utc
 
 BBox = tuple[float, float, float, float]  # west, south, east, north
@@ -81,10 +81,17 @@ class DetectionFilter:
     max_frp: float | None = None
     daynight: str | None = None
     event_id: str | None = None
+    include_static: bool = False  # volcanoes, gas flares, offshore platforms
     limit: int = 5000
+    # "recent" (newest first) or "frp" (strongest first). Map tiles use "frp": the strongest fires are
+    # the ones to keep when a tile hits its cap, and it lets SQLite use the lat/lon index instead of
+    # walking the time index of the whole world to satisfy ORDER BY acquired_at.
+    order: str = "recent"
 
 
 def _where_detections(stmt: Select, f: DetectionFilter) -> Select:
+    if not f.include_static:
+        stmt = stmt.where(DetectionRow.static_kind.is_(None))
     if f.start:
         stmt = stmt.where(DetectionRow.acquired_at >= to_naive_utc(f.start))
     if f.end:
@@ -110,7 +117,8 @@ def _where_detections(stmt: Select, f: DetectionFilter) -> Select:
 
 
 def _filter_detections(stmt: Select, f: DetectionFilter) -> Select:
-    stmt = _where_detections(stmt, f).order_by(DetectionRow.acquired_at.desc())
+    key = DetectionRow.frp_mw.desc() if f.order == "frp" else DetectionRow.acquired_at.desc()
+    stmt = _where_detections(stmt, f).order_by(key)
     # With a radius the bbox pre-filter over-selects, so the limit is applied after the exact check.
     if not (f.area is not None and f.area.has_radius):
         stmt = stmt.limit(f.limit)
@@ -217,6 +225,8 @@ class EventFilter:
     min_confidence_pct: int | None = None
     status: str | None = None
     instrument: str | None = None
+    min_evidence: str | None = None  # single_detection | single_pass | multi_pass
+    lifecycle_state: str | None = None
     sort: str = "recent"  # recent | area | frp
     limit: int = 1000
 
@@ -240,11 +250,43 @@ def _where_events(stmt: Select, f: EventFilter) -> Select:
         stmt = stmt.where(EventRow.max_confidence_pct >= f.min_confidence_pct)
     if f.status:
         stmt = stmt.where(EventRow.status == f.status)
+    if f.lifecycle_state:
+        stmt = stmt.where(EventRow.lifecycle_state == f.lifecycle_state)
+    if f.min_evidence:
+        stmt = stmt.where(EventRow.evidence.in_(EVIDENCE_ORDER[EVIDENCE_ORDER.index(f.min_evidence):]))
     if f.instrument == "MODIS":
         stmt = stmt.where(EventRow.modis_count > 0)
     elif f.instrument == "VIIRS":
         stmt = stmt.where(EventRow.viirs_count > 0)
     return stmt
+
+
+EVIDENCE_ORDER = ["single_detection", "single_pass", "multi_pass"]
+
+
+def resolve_event_id(session: Session, event_id: str, max_hops: int = 50) -> str | None:
+    """Follow event_lineage from an id that is no longer canonical to the event that holds its
+    detections now (merged/renamed: the target; split: the part that received most of them).
+    None if the id never existed or its detections were all reclassified as non-fire."""
+    seen = set()
+    current = event_id
+    for _ in range(max_hops):
+        if session.get(EventRow, current) is not None:
+            return current
+        if current in seen:
+            return None
+        seen.add(current)
+        rows = session.execute(
+            select(EventLineageRow).where(EventLineageRow.old_id == current).order_by(EventLineageRow.at.desc(), EventLineageRow.id.desc())
+        ).scalars().all()
+        if not rows:
+            return None
+        latest = [r for r in rows if r.at == rows[0].at]
+        best = max(latest, key=lambda r: (r.detections_moved, r.new_id or ""))
+        if best.new_id is None:
+            return None
+        current = best.new_id
+    return None
 
 
 def count_events(session: Session, f: EventFilter) -> int:
@@ -272,26 +314,48 @@ def query_events(session: Session, f: EventFilter) -> list[FireEvent]:
     return out
 
 
+CALENDAR_LEVEL = 4  # coarsest fire_cells level (cells.MIN_LEVEL)
+
+
 def calendar(session: Session, start: date, end: date, area: Area | None = None) -> list[CalendarDay]:
     """Daily activity between start and end (inclusive), zero-filled."""
     t0 = datetime.combine(start, datetime.min.time())
     t1 = datetime.combine(end + timedelta(days=1), datetime.min.time())
 
-    day = func.date(DetectionRow.acquired_at)
-    det_stmt = select(
-        day.label("day"),
-        func.count().label("n"),
-        func.coalesce(func.sum(DetectionRow.frp_mw), 0).label("total"),
-        func.coalesce(func.max(DetectionRow.frp_mw), 0).label("peak"),
-    ).where(DetectionRow.acquired_at >= t0, DetectionRow.acquired_at < t1)
     ev_day = func.date(EventRow.start_at)
     ev_stmt = select(ev_day.label("day"), func.count().label("n")).where(
         EventRow.start_at >= t0, EventRow.start_at < t1
     )
     if area:
+        day = func.date(DetectionRow.acquired_at)
+        det_stmt = select(
+            day.label("day"),
+            func.count().label("n"),
+            func.coalesce(func.sum(DetectionRow.frp_mw), 0).label("total"),
+            func.coalesce(func.max(DetectionRow.frp_mw), 0).label("peak"),
+        ).where(DetectionRow.acquired_at >= t0, DetectionRow.acquired_at < t1, DetectionRow.static_kind.is_(None))
         det_stmt = area.apply(det_stmt, DetectionRow.latitude, DetectionRow.longitude)
         ev_stmt = area.apply(ev_stmt, EventRow.latitude, EventRow.longitude)
-    dets = {str(r.day): r for r in session.execute(det_stmt.group_by(day))}
+        dets = {str(r.day): r for r in session.execute(det_stmt.group_by(day))}
+    else:
+        # Worldwide: read the coarsest level of the map pyramid (a few thousand rows per month
+        # instead of millions of detections).
+        h0 = int(t0.replace(tzinfo=UTC).timestamp() // 3600)
+        h1 = int(t1.replace(tzinfo=UTC).timestamp() // 3600)
+        dnum = (FireCellRow.hour / 24).label("dnum")
+        stmt = (
+            select(
+                dnum,
+                func.sum(FireCellRow.n).label("n"),
+                func.sum(FireCellRow.frp_sum).label("total"),
+                func.max(FireCellRow.frp_max).label("peak"),
+            )
+            .where(FireCellRow.level == CALENDAR_LEVEL, FireCellRow.hour >= h0, FireCellRow.hour < h1,
+                   FireCellRow.is_static.is_(False))
+            .group_by(dnum)
+        )
+        epoch = date(1970, 1, 1)
+        dets = {(epoch + timedelta(days=int(r.dnum))).isoformat(): r for r in session.execute(stmt)}
     evs = {str(r.day): r.n for r in session.execute(ev_stmt.group_by(ev_day))}
 
     out = []
@@ -315,7 +379,9 @@ def calendar(session: Session, start: date, end: date, area: Area | None = None)
 def nearby_activity(session: Session, lat: float, lon: float, radius_km: float, since: datetime, until: datetime) -> int:
     area = Area(lat=lat, lon=lon, radius_km=radius_km)
     stmt = select(DetectionRow.latitude, DetectionRow.longitude).where(
-        DetectionRow.acquired_at >= to_naive_utc(since), DetectionRow.acquired_at < to_naive_utc(until)
+        DetectionRow.acquired_at >= to_naive_utc(since),
+        DetectionRow.acquired_at < to_naive_utc(until),
+        DetectionRow.static_kind.is_(None),  # a gas flare next door is not fire activity
     )
     stmt = area.apply(stmt, DetectionRow.latitude, DetectionRow.longitude)
     return sum(1 for r in session.execute(stmt) if area.contains(r.latitude, r.longitude))
