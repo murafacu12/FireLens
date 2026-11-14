@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FireLens</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🔥</text></svg>" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <header class="brand">
+          <div>
+            <h1>FIRELENS</h1>
+            <p class="tagline">MODIS + VIIRS harmonized fire intelligence</p>
+          </div>
+          <span id="mode-badge" class="badge">…</span>
+        </header>
+        <div id="stats" class="stats"></div>
+
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="filters" role="tab">Filters</button>
+          <button class="tab" data-tab="layers" role="tab">Layers</button>
+          <button class="tab" data-tab="calendar" role="tab">Calendar</button>
+          <button class="tab" data-tab="alerts" role="tab">Alerts</button>
+        </nav>
+
+        <section id="tab-filters" class="panel active">
+          <form id="filters">
+            <fieldset>
+              <legend>Time</legend>
+              <div class="row">
+                <label>From <input type="date" name="start" /></label>
+                <label>To <input type="date" name="end" /></label>
+              </div>
+              <div class="chips" id="quick-ranges">
+                <button type="button" data-days="1">24 h</button>
+                <button type="button" data-days="3">3 d</button>
+                <button type="button" data-days="7">7 d</button>
+                <button type="button" data-days="30">30 d</button>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Sensor</legend>
+              <div class="row checks">
+                <label><input type="checkbox" name="instrument" value="MODIS" checked /> MODIS <small>1 km</small></label>
+                <label><input type="checkbox" name="instrument" value="VIIRS" checked /> VIIRS <small>375 m</small></label>
+              </div>
+              <label>Satellite
+                <select name="satellite" multiple size="5">
+                  <option>Terra</option><option>Aqua</option><option>Suomi NPP</option><option>NOAA-20</option><option>NOAA-21</option>
+                </select>
+              </label>
+              <small class="hint">None selected = all. Ctrl/Cmd-click for several.</small>
+            </fieldset>
+
+            <fieldset>
+              <legend>Detection</legend>
+              <div class="row">
+                <label>Min confidence
+                  <select name="min_confidence">
+                    <option value="">Any</option><option value="nominal" selected>Nominal+</option><option value="high">High</option>
+                  </select>
+                </label>
+                <label>Day / night
+                  <select name="daynight"><option value="">Both</option><option value="D">Day</option><option value="N">Night</option></select>
+                </label>
+              </div>
+              <div class="row">
+                <label>FRP min (MW) <input type="number" name="min_frp" min="0" step="any" /></label>
+                <label>FRP max (MW) <input type="number" name="max_frp" min="0" step="any" /></label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Fire event (size)</legend>
+              <div class="row">
+                <label>Area min (km²) <input type="number" name="min_area" min="0" step="any" /></label>
+                <label>Area max (km²) <input type="number" name="max_area" min="0" step="any" /></label>
+              </div>
+              <div class="row">
+                <label>Min detections <input type="number" name="min_detections" min="1" step="1" /></label>
+                <label>Status
+                  <select name="status"><option value="">All</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Location</legend>
+              <label class="inline"><input type="checkbox" name="use_view" /> Limit to current view</label>
+              <div class="row">
+                <label>Lat <input type="number" name="lat" step="any" min="-90" max="90" /></label>
+                <label>Lon <input type="number" name="lon" step="any" min="-180" max="180" /></label>
+                <label>Radius km <input type="number" name="radius_km" step="any" min="0" /></label>
+              </div>
+              <button type="button" id="pick-point" class="secondary">Pick point on globe</button>
+            </fieldset>
+
+            <div class="actions">
+              <button type="submit">Apply filters</button>
+              <button type="reset" class="secondary">Reset</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="tab-layers" class="panel">
+          <fieldset>
+            <legend>Base map</legend>
+            <label class="inline"><input type="radio" name="base" value="esri" checked /> Satellite (Esri World Imagery)</label>
+            <label class="inline"><input type="radio" name="base" value="gibs" /> NASA VIIRS NOAA-20 true colour (daily)</label>
+            <label>GIBS date <input type="date" id="gibs-date" /></label>
+            <label class="inline"><input type="radio" name="base" value="osm" /> OpenStreetMap</label>
+          </fieldset>
+          <fieldset>
+            <legend>Overlays</legend>
+            <label class="inline"><input type="checkbox" id="lyr-detections" checked /> Fire detections (colour = FRP)</label>
+            <label class="inline"><input type="checkbox" id="lyr-events" checked /> Fire events (size = footprint area)</label>
+            <label class="inline"><input type="checkbox" id="lyr-zones" checked /> Alert zones</label>
+            <label class="inline"><input type="checkbox" id="lyr-ndvi" /> Vegetation NDVI (VIIRS 8-day, NASA GIBS)</label>
+          </fieldset>
+          <div class="legend">
+            <div class="ramp"></div>
+            <div class="ramp-labels"><span>1 MW</span><span>10</span><span>100</span><span>1000+ MW</span></div>
+            <p><span class="dot viirs"></span> VIIRS 375 m &nbsp; <span class="dot modis"></span> MODIS 1 km</p>
+          </div>
+        </section>
+
+        <section id="tab-calendar" class="panel">
+          <div class="cal-head">
+            <button type="button" id="cal-prev" class="icon" aria-label="Previous month">‹</button>
+            <h2 id="cal-title"></h2>
+            <button type="button" id="cal-next" class="icon" aria-label="Next month">›</button>
+          </div>
+          <div id="calendar" class="calendar"></div>
+          <p class="hint">Colour = detections per day. Click a day to load that day's fires.</p>
+          <h3 id="cal-day-title"></h3>
+          <ul id="cal-events" class="list"></ul>
+        </section>
+
+        <section id="tab-alerts" class="panel">
+          <form id="rule-form">
+            <fieldset>
+              <legend>New alert rule</legend>
+              <label>Name <input name="name" required maxlength="120" placeholder="e.g. Sierras de Córdoba" /></label>
+              <p class="hint">Zone = current globe view, or the point + radius set in Filters.</p>
+              <div class="row">
+                <label>Min confidence
+                  <select name="min_confidence"><option value="low">Low</option><option value="nominal" selected>Nominal</option><option value="high">High</option></select>
+                </label>
+                <label>Min area (km²) <input type="number" name="min_area_km2" min="0" step="any" value="0" /></label>
+              </div>
+              <div class="row">
+                <label>Min FRP (MW) <input type="number" name="min_frp_mw" min="0" step="any" value="0" /></label>
+                <label>Min detections <input type="number" name="min_detections" min="1" step="1" value="1" /></label>
+              </div>
+              <label>Webhook URL (optional) <input type="url" name="webhook_url" placeholder="https://…" /></label>
+              <div class="actions"><button type="submit">Create rule</button></div>
+            </fieldset>
+          </form>
+          <h3>Rules</h3>
+          <ul id="rules" class="list"></ul>
+          <h3>Recent alerts</h3>
+          <ul id="alerts" class="list"></ul>
+        </section>
+      </aside>
+
+      <main id="globe"></main>
+
+      <aside id="details" class="details hidden">
+        <button type="button" id="details-close" class="icon close" aria-label="Close">×</button>
+        <div id="details-body"></div>
+      </aside>
+      <div id="toast" class="toast hidden" role="status"></div>
+      <div id="picking-hint" class="picking hidden">Click the globe to set the point · Esc to cancel</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
