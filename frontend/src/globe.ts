@@ -32,17 +32,23 @@ import {
   Terrain,
   UrlTemplateImageryProvider,
   VerticalOrigin,
+  HorizontalOrigin,
   Viewer,
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
-import type { AlertRule, CompactDetections, FireEvent } from "./api";
+import type { AlertRule, CompactDetections, DetectionGrid, FireEvent } from "./api";
 
 export type BaseLayerId = "esri" | "osm" | "gibs";
 export type PickResult =
   | { kind: "detection"; id: string }
   | { kind: "event"; eventId: string }
-  | { kind: "point"; lat: number; lon: number };
+  | { kind: "point"; lat: number; lon: number }
+  | { kind: "cell"; lat: number; lon: number; cellDeg: number; count: number };
+
+// Grouped-marker cell sizes (degrees). Snapping keeps cells stable while zooming slightly.
+const CELL_STEPS = [0.1, 0.25, 0.5, 1, 2, 4, 8];
+const CELL_PX = 45; // target on-screen spacing between bubbles
 
 const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
 // Markers sit slightly above the ellipsoid and skip depth testing only when the camera is
@@ -71,6 +77,13 @@ const RAMP: { solid: Color; faint: Color }[] = Array.from({ length: RAMP_STEPS }
 function rampIndex(frp: number | null): number {
   const t = Math.min(1, Math.log10(Math.max(1, frp ?? 1)) / 3);
   return Math.round(t * (RAMP_STEPS - 1));
+}
+const CLUSTER_HEIGHT_M = 5000; // bubbles float a bit higher than single points
+const CLUSTER_OUTLINE = Color.WHITE.withAlpha(0.8);
+function compactCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return `${Math.round(n / 1000)}k`;
 }
 const VIIRS_OUTLINE = Color.WHITE.withAlpha(0.7);
 const MODIS_OUTLINE = Color.BLACK.withAlpha(0.8);
@@ -114,10 +127,12 @@ export class Globe {
   private readonly baseLayers: Record<BaseLayerId, ImageryLayer>;
   private readonly ndviLayer: ImageryLayer;
   private readonly detections: Layer;
+  private readonly clusters: Layer;
   private readonly events: Layer;
   private readonly zones: Layer;
   private readonly pinned: Layer;
   private detectionIds: string[] = [];
+  private grid: DetectionGrid | null = null;
 
   constructor(container: HTMLElement, onPick: (r: PickResult) => void) {
     const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
@@ -174,6 +189,7 @@ export class Globe {
     this.zones = new Layer(scene.primitives);
     this.events = new Layer(scene.primitives);
     this.detections = new Layer(scene.primitives);
+    this.clusters = new Layer(scene.primitives);
     this.pinned = new Layer(scene.primitives);
 
     this.viewer.camera.setView({ destination: Cartesian3.fromDegrees(-62, -25, 9_000_000) });
@@ -193,6 +209,12 @@ export class Globe {
       }
       if (typeof id === "number" && this.detectionIds[id] !== undefined) {
         onPick({ kind: "detection", id: this.detectionIds[id] });
+        return;
+      }
+      if (typeof id === "string" && id.startsWith("cell:") && this.grid) {
+        const i = Number(id.slice(5));
+        const g = this.grid;
+        onPick({ kind: "cell", lat: g.lat[i], lon: g.lon[i], cellDeg: g.cell_deg, count: g.count[i] });
         return;
       }
       const cart = this.viewer.camera.pickEllipsoid(e.position, scene.globe.ellipsoid);
@@ -304,6 +326,68 @@ export class Globe {
 
   setDetectionsVisible(v: boolean): void {
     this.detections.show = v;
+    this.clusters.show = v; // grouped markers are the same data, zoomed out
+    this.redraw();
+  }
+
+  /** Grid cell size for the current zoom, so bubbles end up ~CELL_PX apart on screen. */
+  cellSizeDeg(): number {
+    const widthKm = (this.viewer.scene.mode === SceneMode.SCENE2D ? this.currentDistance() : this.currentDistance() * 1.15) / 1000;
+    const cellsAcross = Math.max(4, this.viewer.canvas.clientWidth / CELL_PX);
+    const ideal = widthKm / cellsAcross / 111;
+    // nearest step on a log scale (rounding up made cells up to 2x too coarse)
+    return CELL_STEPS.reduce((best, s) => (Math.abs(Math.log(s / ideal)) < Math.abs(Math.log(best / ideal)) ? s : best));
+  }
+
+  /** Call `fn` once the camera stops moving (after drags, zooms and flights). */
+  onCameraSettled(fn: () => void, delayMs = 250): void {
+    let timer: number | undefined;
+    this.viewer.camera.moveEnd.addEventListener(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(fn, delayMs);
+    });
+  }
+
+  /** Zoomed-out view: one bubble per cell, sized by count, coloured by its strongest fire.
+   * Pass null to clear (zoomed-in view shows individual detections instead). */
+  showClusters(grid: DetectionGrid | null): void {
+    this.grid = grid;
+    if (!grid || grid.cells === 0) {
+      this.clusters.replace();
+      this.redraw();
+      return;
+    }
+    const bubbles = new PointPrimitiveCollection();
+    const labels = new LabelCollection();
+    for (let i = 0; i < grid.cells; i++) {
+      const n = grid.count[i];
+      const size = Math.min(34, 8 + 3 * Math.log2(n)); // capped below CELL_PX so neighbours rarely overlap
+      const position = Cartesian3.fromDegrees(grid.lon[i], grid.lat[i], CLUSTER_HEIGHT_M);
+      bubbles.add({
+        id: `cell:${i}`,
+        position,
+        pixelSize: size,
+        color: RAMP[rampIndex(grid.max_frp[i])].solid.withAlpha(0.82),
+        outlineColor: CLUSTER_OUTLINE,
+        outlineWidth: 1.5,
+        disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
+      });
+      if (size >= 17) {
+        labels.add({
+          position,
+          text: compactCount(n),
+          font: "600 11px Inter, system-ui, sans-serif",
+          fillColor: Color.WHITE,
+          outlineColor: Color.BLACK.withAlpha(0.85),
+          outlineWidth: 3,
+          style: LabelStyle.FILL_AND_OUTLINE,
+          verticalOrigin: VerticalOrigin.CENTER,
+          horizontalOrigin: HorizontalOrigin.CENTER,
+          disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
+        });
+      }
+    }
+    this.clusters.replace(bubbles, labels);
     this.redraw();
   }
 

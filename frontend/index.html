@@ -29,15 +29,38 @@
           <form id="filters">
             <fieldset>
               <legend>Time</legend>
-              <div class="row">
-                <label>From <input type="date" name="start" /></label>
-                <label>To <input type="date" name="end" /></label>
+              <div class="segmented" role="tablist" aria-label="Data mode">
+                <button type="button" data-mode="latest" class="active" role="tab" aria-selected="true">Latest</button>
+                <button type="button" data-mode="history" role="tab" aria-selected="false">History</button>
               </div>
-              <div class="chips" id="quick-ranges">
-                <button type="button" data-days="1">24 h</button>
-                <button type="button" data-days="3">3 d</button>
-                <button type="button" data-days="7">7 d</button>
-                <button type="button" data-days="30">30 d</button>
+
+              <div id="mode-latest">
+                <div class="chips" id="latest-window">
+                  <button type="button" data-hours="24" class="active">Last 24 h</button>
+                  <button type="button" data-hours="48">48 h</button>
+                  <button type="button" data-hours="168">7 days</button>
+                </div>
+                <p class="hint" id="freshness"></p>
+                <button type="button" id="fetch-latest" class="secondary small">Fetch newest from NASA now</button>
+              </div>
+
+              <div id="mode-history" class="hidden">
+                <div class="row day-picker">
+                  <button type="button" class="icon" id="day-prev" aria-label="Previous day(s)">‹</button>
+                  <label>From <input type="date" name="start" /></label>
+                  <label>To <input type="date" name="end" /></label>
+                  <button type="button" class="icon" id="day-next" aria-label="Next day(s)">›</button>
+                </div>
+                <div class="chips" id="history-presets">
+                  <button type="button" data-ago="1" data-span="1">Yesterday</button>
+                  <button type="button" data-ago="7" data-span="7">Last week</button>
+                  <button type="button" data-ago="30" data-span="30">Last 30 days</button>
+                </div>
+                <div id="coverage-banner" class="banner hidden" role="status">
+                  <p class="banner-text"></p>
+                  <div class="progress hidden"><div class="bar"></div></div>
+                  <button type="button" class="secondary small hidden" id="coverage-load">Load from NASA archive</button>
+                </div>
               </div>
             </fieldset>
 
@@ -89,7 +112,7 @@
 
             <fieldset>
               <legend>Location</legend>
-              <label class="inline"><input type="checkbox" name="use_view" /> Limit to current view</label>
+              <p class="hint">The map always shows what's in view. A point + radius narrows it further.</p>
               <div class="row">
                 <label>Lat <input type="number" name="lat" step="any" min="-90" max="90" /></label>
                 <label>Lon <input type="number" name="lon" step="any" min="-180" max="180" /></label>
@@ -124,6 +147,7 @@
             <div class="ramp"></div>
             <div class="ramp-labels"><span>1 MW</span><span>10</span><span>100</span><span>1000+ MW</span></div>
             <p><span class="dot viirs"></span> VIIRS 375 m &nbsp; <span class="dot modis"></span> MODIS 1 km</p>
+            <p><span class="dot bubble">12</span> Zoomed out: grouped detections (number = count, colour = strongest fire). Click to zoom in.</p>
           </div>
         </section>
 

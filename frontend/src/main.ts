@@ -8,11 +8,14 @@ import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
 const filtersForm = $<HTMLFormElement>("#filters");
 const MAX_ZONE_DEG = 40; // an alert zone taken from a zoomed-out view would cover half the planet
 const MAX_POINTS = 50_000; // compact payload + batched points keep this cheap
+const DETAIL_MAX = 20_000; // above this many detections in view, show grouped markers instead
 let picking = false;
 let focusEventId: string | null = null;
 
 const globe = new Globe($("#globe"), onPick);
 if (import.meta.env.DEV) (window as unknown as { __globe: Globe }).__globe = globe; // debugging aid
+let booted = false; // camera-driven refreshes start after the first load, so startup queries run once
+globe.onCameraSettled(() => booted && void refresh()); // the map shows what's in view, at a density that fits it
 
 // ---------------------------------------------------------------- picking
 function onPick(r: PickResult): void {
@@ -25,7 +28,11 @@ function onPick(r: PickResult): void {
     globe.pin(r.lat, r.lon, Number(radius.value));
     return;
   }
-  if (r.kind === "event") void openEvent(r.eventId);
+  if (r.kind === "cell") {
+    // Zoom into the bubble; the camera-settled refresh then shows finer cells or the fires themselves.
+    const h = r.cellDeg / 2;
+    globe.flyToBox(r.lon - h, r.lat - h, r.lon + h, r.lat + h);
+  } else if (r.kind === "event") void openEvent(r.eventId);
   else if (r.kind === "detection") {
     api.detection(r.id).then(showDetection, (err: Error) => toast(`Could not load detection: ${err.message}`, "error"));
   }
@@ -55,21 +62,19 @@ async function openEvent(id: string): Promise<void> {
 function readFilters() {
   const f = new FormData(filtersForm);
   const s = (k: string) => (f.get(k) as string | null)?.trim() || undefined;
-  const start = s("start");
-  const end = s("end");
+  const { start, end } = timeRange();
   const area: Record<string, string | undefined> = {};
-  if (f.get("use_view")) {
-    const bbox = globe.viewBbox();
-    if (bbox) area.bbox = bbox.join(",");
-  }
+  // The map always loads what the camera sees; a point + radius narrows it further.
+  const bbox = globe.viewBbox();
+  if (bbox) area.bbox = bbox.join(",");
   if (s("lat") && s("lon") && s("radius_km")) {
     Object.assign(area, { lat: s("lat"), lon: s("lon"), radius_km: s("radius_km") });
   }
   const instruments = f.getAll("instrument") as string[];
   return {
     common: {
-      start: start ? `${start}T00:00:00Z` : undefined,
-      end: end ? `${end}T23:59:59Z` : undefined,
+      start,
+      end,
       ...area,
     },
     detections: {
@@ -92,41 +97,314 @@ function readFilters() {
   };
 }
 
-function setRange(days: number): void {
-  (filtersForm.elements.namedItem("start") as HTMLInputElement).value = isoDay(daysAgo(days - 1));
-  (filtersForm.elements.namedItem("end") as HTMLInputElement).value = isoDay(new Date());
+
+// ---------------------------------------------------------------- time: Latest vs History
+type TimeMode = "latest" | "history";
+let timeMode: TimeMode = "latest";
+let latestHours = 24;
+const AUTO_REFRESH_MS = 5 * 60_000; // Latest mode re-reads the database; the API pulls NASA hourly
+const MAX_LOAD_DAYS = 31; // History auto-loads at most this many missing days at once
+const MAX_LOAD_SPAN_DEG = 60; // ...for a view at most this wide (a region, not a hemisphere)
+
+const dateInput = (name: "start" | "end") => filtersForm.elements.namedItem(name) as HTMLInputElement;
+
+/** Query window for the map: a rolling window back from now, or the selected calendar days (UTC). */
+function timeRange(): { start?: string; end?: string } {
+  if (timeMode === "latest") return { start: new Date(Date.now() - latestHours * 3_600_000).toISOString() };
+  const s = dateInput("start").value;
+  const e = dateInput("end").value;
+  return { start: s ? `${s}T00:00:00Z` : undefined, end: e ? `${e}T23:59:59Z` : undefined };
 }
 
+function setHistoryRange(start: string, end: string): void {
+  dateInput("start").value = start;
+  dateInput("end").value = end < start ? start : end;
+}
+
+function setTimeMode(mode: TimeMode): void {
+  timeMode = mode;
+  document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+    b.setAttribute("aria-selected", String(b.dataset.mode === mode));
+  });
+  $("#mode-latest").classList.toggle("hidden", mode !== "latest");
+  $("#mode-history").classList.toggle("hidden", mode !== "history");
+  if (mode === "history" && !dateInput("start").value) setHistoryRange(isoDay(daysAgo(1)), isoDay(daysAgo(1)));
+  if (mode === "latest") showBanner("", "hidden");
+  focusEventId = null;
+  void refresh();
+}
+
+document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((b) =>
+  b.addEventListener("click", () => setTimeMode(b.dataset.mode as TimeMode)),
+);
+$("#latest-window").addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-hours]");
+  if (!btn) return;
+  latestHours = Number(btn.dataset.hours);
+  document.querySelectorAll("#latest-window button").forEach((b) => b.classList.toggle("active", b === btn));
+  void refresh();
+});
+$("#fetch-latest").addEventListener("click", async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = "Fetching from NASA…";
+  try {
+    const report = (await api.ingest({})) as { stored: number; sources: { source: string; error: string | null }[] };
+    const failed = report.sources.filter((s) => s.error).map((s) => s.source);
+    toast(`NASA FIRMS: ${report.stored.toLocaleString()} detections refreshed${failed.length ? ` (failed: ${failed.join(", ")})` : ""}.`,
+      failed.length ? "error" : "info");
+    await loadHealth();
+    await refresh();
+  } catch (err) {
+    toast(`Fetch failed: ${(err as Error).message}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Fetch newest from NASA now";
+  }
+});
+
+function shiftHistory(direction: 1 | -1): void {
+  const s = new Date(`${dateInput("start").value}T00:00:00Z`);
+  const e = new Date(`${dateInput("end").value}T00:00:00Z`);
+  const span = Math.round((e.getTime() - s.getTime()) / 86_400_000) + 1;
+  const ns = new Date(s.getTime() + direction * span * 86_400_000);
+  const ne = new Date(e.getTime() + direction * span * 86_400_000);
+  if (ne > new Date()) return; // no future days
+  setHistoryRange(isoDay(ns), isoDay(ne));
+  void refresh();
+}
+$("#day-prev").addEventListener("click", () => shiftHistory(-1));
+$("#day-next").addEventListener("click", () => shiftHistory(1));
+$("#history-presets").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ago]");
+  if (!b) return;
+  const ago = Number(b.dataset.ago);
+  const span = Number(b.dataset.span);
+  setHistoryRange(isoDay(daysAgo(ago)), isoDay(daysAgo(ago - span + 1)));
+  void refresh();
+});
+for (const name of ["start", "end"] as const) {
+  dateInput(name).max = isoDay(new Date());
+  dateInput(name).addEventListener("change", () => {
+    if (dateInput("end").value < dateInput("start").value) dateInput("end").value = dateInput("start").value;
+    void refresh();
+  });
+}
+
+function renderFreshness(): void {
+  const el = $("#freshness");
+  if (!health?.latest_detection_at) {
+    el.textContent = "No detections loaded yet.";
+    return;
+  }
+  const ageMin = Math.max(0, Math.round((Date.now() - new Date(health.latest_detection_at).getTime()) / 60_000));
+  const age = ageMin < 60 ? `${ageMin} min` : `${Math.floor(ageMin / 60)} h ${ageMin % 60} min`;
+  const pulls = health.refresh_minutes ? ` FireLens pulls NASA every ${health.refresh_minutes} min;` : "";
+  el.textContent = `Newest satellite pass: ${age} ago (${fmtTime(health.latest_detection_at)}).${pulls} the map refreshes itself every ${AUTO_REFRESH_MS / 60_000} min. NASA publishes passes ~3 h after the satellite flies over.`;
+}
+window.setInterval(renderFreshness, 30_000);
+window.setInterval(async () => {
+  if (!booted || timeMode !== "latest" || document.hidden) return;
+  await loadHealth().catch(() => undefined);
+  await refresh();
+}, AUTO_REFRESH_MS);
+
+// ---------------------------------------------------------------- history: load missing days automatically
+const attemptedLoads = new Set<string>();
+let coverageJobId: string | null = null;
+let keepBannerUntil = 0; // let a "Loaded …" confirmation stay readable after the follow-up re-check
+
+function showBanner(text: string, kind: "info" | "warn" | "ok" | "hidden", withButton = false): void {
+  const banner = $("#coverage-banner");
+  banner.className = `banner ${kind === "hidden" ? "hidden" : kind === "info" ? "" : kind}`;
+  $(".banner-text", banner).innerHTML = text;
+  $("#coverage-load").classList.toggle("hidden", !withButton);
+  $(".progress", banner).classList.add("hidden");
+}
+
+function viewSpanDeg(b: [number, number, number, number]): number {
+  const width = b[2] >= b[0] ? b[2] - b[0] : 360 - (b[0] - b[2]);
+  return Math.max(width, b[3] - b[1]);
+}
+
+/** Round the view outwards to 0.5 deg so nearby pans reuse the same coverage records. */
+function snapBbox(b: [number, number, number, number]): string {
+  const f = (x: number) => Math.floor(x * 2) / 2;
+  const c = (x: number) => Math.ceil(x * 2) / 2;
+  return [Math.max(-180, f(b[0])), Math.max(-90, f(b[1])), Math.min(180, c(b[2])), Math.min(90, c(b[3]))].join(",");
+}
+
+const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+
+async function checkCoverage(): Promise<void> {
+  if (timeMode !== "history" || focusEventId) return showBanner("", "hidden");
+  if (coverageJobId) return; // a load is running; its watcher owns the banner
+  const start = dateInput("start").value;
+  const end = dateInput("end").value;
+  if (!start || !end) return;
+  const view = globe.viewBbox();
+  let cov;
+  try {
+    cov = await api.coverage({ start, end, bbox: view ? view.join(",") : undefined });
+  } catch {
+    return;
+  }
+  const missing = cov.missing;
+  if (!missing.length) {
+    if (Date.now() < keepBannerUntil) return;
+    return showBanner("", "hidden");
+  }
+  const total = cov.days.length;
+  const what = missing.length === total
+    ? (total === 1 ? `${fmtDay(start)} isn't` : "These days aren't")
+    : `${missing.length} of ${total} days aren't`;
+  if (!cov.can_load) {
+    return showBanner(`${what} loaded for this area. Loading history needs a FIRMS MAP_KEY (see Calendar → Fire history).`, "warn");
+  }
+  if (!view || view[0] > view[2] || viewSpanDeg(view) > MAX_LOAD_SPAN_DEG) {
+    return showBanner(`${what} fully loaded for this area. Zoom in to a region (under ${MAX_LOAD_SPAN_DEG}° across) and FireLens will load it from the NASA archive.`, "warn");
+  }
+  const first = missing[0];
+  const last = missing[missing.length - 1];
+  const daysToLoad = Math.round((Date.parse(last) - Date.parse(first)) / 86_400_000) + 1;
+  if (daysToLoad > MAX_LOAD_DAYS) {
+    return showBanner(`${what} loaded for this area. Pick ${MAX_LOAD_DAYS} days or fewer to load them automatically, or:`, "warn", true);
+  }
+  const box = snapBbox(view);
+  const key = `${first}|${last}|${box}`;
+  if (attemptedLoads.has(key)) {
+    // tried already: NASA may not have these days for every satellite; don't loop
+    return showBanner(`${what} complete for this area in the NASA archive (already requested).`, "warn", true);
+  }
+  attemptedLoads.add(key);
+  await startCoverageLoad(first, last, box);
+}
+
+async function startCoverageLoad(start: string, end: string, bbox: string): Promise<void> {
+  try {
+    const job = await api.backfill({ start, end, bbox });
+    followCoverageJob(job.id);
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.startsWith("409")) {
+      // another load is running (e.g. from the Calendar tab): follow it, then re-check
+      const running = (await api.jobs().catch(() => [] as BackfillJob[])).find((j) => j.status === "running" || j.status === "queued");
+      if (running) return followCoverageJob(running.id);
+    }
+    showBanner(`Could not load from NASA: ${esc(msg)}`, "warn", true);
+  }
+}
+
+function followCoverageJob(id: string): void {
+  coverageJobId = id;
+  const banner = $("#coverage-banner");
+  const tick = async () => {
+    let job: BackfillJob;
+    try {
+      job = await api.job(id);
+    } catch (err) {
+      coverageJobId = null;
+      return showBanner(`Lost track of the NASA load: ${esc((err as Error).message)}`, "warn", true);
+    }
+    const r = job.request;
+    const range = r.start === r.end ? fmtDay(r.start) : `${fmtDay(r.start)} – ${fmtDay(r.end)}`;
+    if (job.status === "queued" || job.status === "running") {
+      banner.className = "banner";
+      $(".banner-text", banner).innerHTML =
+        `Loading <b>${esc(range)}</b> from the NASA archive… ${job.done_chunks}/${job.total_chunks || "?"} requests · ` +
+        `${job.detections.toLocaleString()} detections`;
+      $(".progress", banner).classList.remove("hidden");
+      $(".bar", banner).style.width = `${Math.round(job.progress * 100)}%`;
+      $("#coverage-load").classList.add("hidden");
+      window.setTimeout(tick, 2000);
+      return;
+    }
+    coverageJobId = null;
+    if (job.status === "done") {
+      const partial = job.failed_chunks ? ` (${job.failed_chunks} request(s) failed)` : "";
+      showBanner(`Loaded ${esc(range)}: ${job.detections.toLocaleString()} detections${partial}.`, job.failed_chunks ? "warn" : "ok");
+      keepBannerUntil = Date.now() + 8000;
+      window.setTimeout(() => void checkCoverage(), 8200);
+      void renderCalendar();
+      await refresh(); // re-checks coverage; anything NASA didn't have stays flagged, without looping
+    } else {
+      showBanner(`NASA load ${esc(job.status)}: ${esc(job.errors.at(-1) ?? "no data returned")}`, "warn", true);
+    }
+  };
+  void tick();
+}
+
+$("#coverage-load").addEventListener("click", async () => {
+  const view = globe.viewBbox();
+  if (!view || view[0] > view[2] || viewSpanDeg(view) > MAX_LOAD_SPAN_DEG) {
+    return toast(`Zoom in to a region under ${MAX_LOAD_SPAN_DEG}° across first.`, "error");
+  }
+  const start = dateInput("start").value;
+  const end = dateInput("end").value;
+  const days = Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1;
+  if (days > 400) return toast("Pick 400 days or fewer.", "error");
+  await startCoverageLoad(start, end, snapBbox(view));
+});
+
+const NO_DETECTIONS = { count: 0, id: [], lat: [], lon: [], frp: [], conf: [], viirs: [], t: [] };
+let refreshSeq = 0; // a newer refresh (e.g. the camera moved again) discards older responses
+
 async function refresh(): Promise<void> {
+  const seq = ++refreshSeq;
   const f = readFilters();
   if (f.noSensor) {
-    globe.showDetections({ count: 0, id: [], lat: [], lon: [], frp: [], conf: [], viirs: [], t: [] });
+    globe.showClusters(null);
+    globe.showDetections(NO_DETECTIONS);
     globe.showEvents([]);
     renderStats(0, 0);
     return;
   }
   try {
-    // Focus mode shows one fire's complete history, regardless of the sidebar filters.
-    const [dets, events] = await Promise.all([
-      focusEventId
-        ? api.detectionsCompact({ event_id: focusEventId, limit: MAX_POINTS })
-        : api.detectionsCompact({ ...f.common, ...f.detections, limit: MAX_POINTS }),
-      focusEventId ? Promise.resolve([]) : api.events({ ...f.common, ...f.events, limit: 5000 }),
+    if (focusEventId) {
+      // Focus mode shows one fire's complete history, regardless of the view and filters.
+      const dets = await api.detectionsCompact({ event_id: focusEventId, limit: MAX_POINTS });
+      if (seq !== refreshSeq) return;
+      globe.showClusters(null);
+      globe.showDetections(dets);
+      globe.showEvents([]);
+      renderStats(dets.count, 1);
+      return;
+    }
+    // The grid is cheap and exact: it decides between grouped markers and individual points.
+    const cell = globe.cellSizeDeg();
+    const [grid, events] = await Promise.all([
+      api.grid({ ...f.common, ...f.detections, cell_deg: cell }),
+      api.eventsCount({ ...f.common, ...f.events }),
     ]);
-    globe.showDetections(dets);
-    globe.showEvents(events);
-    renderStats(dets.count, events.length);
-    if (dets.count >= MAX_POINTS) toast(`Showing the ${MAX_POINTS.toLocaleString()} most recent detections — narrow the filters to see all.`);
+    if (seq !== refreshSeq) return;
+    if (grid.total <= DETAIL_MAX) {
+      const [dets, eventList] = await Promise.all([
+        api.detectionsCompact({ ...f.common, ...f.detections, limit: DETAIL_MAX }),
+        api.events({ ...f.common, ...f.events, limit: 5000 }),
+      ]);
+      if (seq !== refreshSeq) return;
+      globe.showClusters(null);
+      globe.showDetections(dets);
+      globe.showEvents(eventList);
+    } else {
+      globe.showDetections(NO_DETECTIONS);
+      globe.showEvents([]);
+      globe.showClusters(grid);
+    }
+    renderStats(grid.total, events.count, grid.total > DETAIL_MAX ? `Grouped in ${cell}° cells · zoom in for individual fires` : "");
+    if (seq === refreshSeq) void checkCoverage();
   } catch (err) {
     toast(`Failed to load data: ${(err as Error).message}`, "error");
   }
 }
 
-function renderStats(dets: number, events: number): void {
+function renderStats(dets: number, events: number, note = ""): void {
   $("#stats").innerHTML = `
-    <div><b>${dets.toLocaleString()}</b><span>detections</span></div>
+    <div><b>${dets.toLocaleString()}</b><span>detections in view</span></div>
     <div><b>${events.toLocaleString()}</b><span>fire events</span></div>
-    ${focusEventId ? `<button type="button" id="clear-focus" class="secondary small">Show all</button>` : ""}`;
+    ${focusEventId ? `<button type="button" id="clear-focus" class="secondary small">Show all</button>` : ""}
+    ${note ? `<p class="stats-note">${esc(note)}</p>` : ""}`;
   document.getElementById("clear-focus")?.addEventListener("click", () => {
     focusEventId = null;
     void refresh();
@@ -145,17 +423,9 @@ filtersForm.addEventListener("submit", (e) => {
 });
 filtersForm.addEventListener("reset", () => {
   window.setTimeout(() => {
-    setRange(7);
     globe.pin(null, null);
-    focusEventId = null;
-    void refresh();
+    setTimeMode("latest");
   });
-});
-$("#quick-ranges").addEventListener("click", (e) => {
-  const days = (e.target as HTMLElement).dataset.days;
-  if (!days) return;
-  setRange(Number(days));
-  void refresh();
 });
 $("#pick-point").addEventListener("click", () => setPicking(true));
 document.addEventListener("keydown", (e) => {
@@ -220,10 +490,8 @@ async function renderCalendar(): Promise<void> {
 $("#calendar").addEventListener("click", async (e) => {
   const day = (e.target as HTMLElement).closest<HTMLElement>("[data-date]")?.dataset.date;
   if (!day) return;
-  (filtersForm.elements.namedItem("start") as HTMLInputElement).value = day;
-  (filtersForm.elements.namedItem("end") as HTMLInputElement).value = day;
-  focusEventId = null;
-  void refresh();
+  setHistoryRange(day, day);
+  setTimeMode("history");
   $("#cal-day-title").textContent = `Fires on ${day}`;
   try {
     const events = await api.events({ start: `${day}T00:00:00Z`, end: `${day}T23:59:59Z`, sort: "area", limit: 15 });
@@ -439,10 +707,10 @@ async function loadHealth(): Promise<void> {
   badge.classList.toggle("seeding", health.seeding);
   badge.title = `${title} Last ingest: ${health.last_ingest ? fmtTime(health.last_ingest) : "never"}.`;
   renderHistoryAvailability();
+  renderFreshness();
 }
 
 wireDetails((id) => void openEvent(id));
-setRange(7);
 (historyForm.elements.namedItem("end") as HTMLInputElement).value = isoDay(daysAgo(1));
 (historyForm.elements.namedItem("start") as HTMLInputElement).value = isoDay(daysAgo(30));
 (async () => {
@@ -460,6 +728,7 @@ setRange(7);
     toast("Backend not reachable on /api — is the API running on :8000?", "error");
   }
   await refresh();
+  booted = true;
   const rules = await api.rules().catch(() => []);
   globe.showAlertZones(rules);
 })();

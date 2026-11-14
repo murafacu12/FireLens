@@ -50,6 +50,25 @@ PUBLIC_REGIONS = [
     "Australia_NewZealand",
 ]
 PUBLIC_WINDOWS = ["24h", "48h", "7d"]
+PUBLIC_WINDOW_HOURS = {"24h": 24, "48h": 48, "7d": 168}
+
+# Approximate extent of each public-file region (west, south, east, north), used to record
+# what a public refresh covers. FIRMS' exact region polygons are slightly different.
+PUBLIC_REGION_BBOX: dict[str, tuple[float, float, float, float]] = {
+    "Global": (-180, -90, 180, 90),
+    "South_America": (-95, -60, -30, 15),
+    "Central_America": (-120, 5, -57, 33),
+    "USA_contiguous_and_Hawaii": (-161, 18, -66, 50),
+    "Canada": (-141, 41, -52, 84),
+    "Alaska": (-170, 51, -129, 72),
+    "Europe": (-26, 34, 45, 72),
+    "Northern_and_Central_Africa": (-26, -12, 63, 38),
+    "Southern_Africa": (10, -36, 58, -5),
+    "Russia_Asia": (26, 35, 180, 82),
+    "South_Asia": (60, 5, 98, 38),
+    "SouthEast_Asia": (88, -11, 142, 29),
+    "Australia_NewZealand": (110, -48, 180, -9),
+}
 
 
 def get_source(source_id: str) -> FirmsSource:

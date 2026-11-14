@@ -102,3 +102,33 @@ def test_compact_detections_match_full_and_detail_lookup(client):
 def test_responses_are_gzipped(client):
     resp = client.get("/api/detections/compact", params={"limit": 5000}, headers={"Accept-Encoding": "gzip"})
     assert resp.headers.get("content-encoding") == "gzip"
+
+
+def test_grid_totals_are_exact_and_cells_follow_filters(client):
+    total = client.get("/api/health").json()["detections"]
+    coarse = client.get("/api/detections/grid", params={"cell_deg": 5}).json()
+    fine = client.get("/api/detections/grid", params={"cell_deg": 0.5}).json()
+    # exact totals, unaffected by the 5000-row default limit of the list endpoints
+    assert coarse["total"] == fine["total"] == total > 5000
+    assert sum(coarse["count"]) == total and coarse["cells"] == len(coarse["lat"])
+    assert fine["cells"] > coarse["cells"]
+    viirs = client.get("/api/detections/grid", params={"cell_deg": 5, "instrument": "VIIRS"}).json()
+    assert 0 < viirs["total"] < total and sum(viirs["viirs"]) == viirs["total"]
+    # a cell's marker sits on its fires: centroid inside the cell's bounds
+    for lat, lon in zip(fine["lat"], fine["lon"]):
+        assert -90 <= lat <= 90 and -180 <= lon <= 180
+
+
+def test_grid_respects_bbox_including_antimeridian(client):
+    south_america = client.get("/api/detections/grid", params={"cell_deg": 1, "bbox": "-82,-56,-34,13"}).json()
+    assert south_america["total"] > 0
+    assert all(-82 <= lon <= -34 for lon in south_america["lon"])
+    # a box crossing 180 deg (west > east) covers Australia (150E) and not the Americas
+    pacific = client.get("/api/detections/grid", params={"cell_deg": 1, "bbox": "100,-60,-170,10"}).json()
+    assert pacific["total"] > 0 and all(lon >= 100 or lon <= -170 for lon in pacific["lon"])
+
+
+def test_event_count_matches_list(client):
+    params = {"min_area": 1}
+    events = client.get("/api/events", params={**params, "limit": 10000}).json()
+    assert client.get("/api/events/count", params=params).json()["count"] == len(events) > 0

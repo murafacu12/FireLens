@@ -218,3 +218,51 @@ def test_job_fails_when_every_request_fails(tmp_path):
         job = run_job(client, {"start": "2026-06-29", "end": "2026-06-30", "bbox": "-60,-30,-55,-25", "platforms": ["MODIS"]})
         assert job["status"] == "failed" and job["failed_chunks"] == job["total_chunks"] == 1
         assert "Invalid API call" in job["errors"][0]
+
+
+# --------------------------------------------------------------------- coverage
+
+def test_covered_fraction_geometry():
+    from app.services.coverage import covered_fraction
+
+    south_america = (-95, -60, -30, 15)
+    assert covered_fraction((-70, -40, -60, -30), [south_america]) == 1.0  # Argentina view inside
+    assert covered_fraction((10, 40, 20, 50), [south_america]) == 0.0  # Europe view
+    assert 0.4 < covered_fraction((-40, -10, -20, 10), [south_america]) < 0.6  # straddles the coast
+    # a view crossing the antimeridian is split, not misread as a 340-degree-wide box
+    assert covered_fraction((170, -10, -170, 10), [(160, -20, 180, 20)]) == pytest.approx(0.5)
+
+
+def test_public_refresh_records_what_it_covered(tmp_path):
+    client, _ = make_client(tmp_path, firms_map_key=None)
+    with client:
+        assert wait_until(lambda: client.get("/api/health").json()["detections"] > 0 and not client.get("/api/health").json()["seeding"])
+        health = client.get("/api/health").json()
+        newest = max(
+            d.acquired_at
+            for text, src in [(J1, "VIIRS_NOAA20_NRT"), (J2, "VIIRS_NOAA21_NRT"), (MODIS, "MODIS_NRT")]
+            for d in normalize_csv(text, get_source(src)).detections
+        )
+        assert health["latest_detection_at"] == newest.isoformat()  # freshness = newest stored observation
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        argentina = client.get("/api/history/coverage", params={"start": today, "end": today, "bbox": "-73.6,-55.1,-53.6,-21.8"}).json()
+        assert argentina["days"][0]["status"] == "loaded" and argentina["missing"] == []
+        europe = client.get("/api/history/coverage", params={"start": today, "end": today, "bbox": "-10,35,30,60"}).json()
+        assert europe["days"][0]["status"] == "missing" and europe["can_load"] is False
+        older = client.get("/api/history/coverage", params={"start": "2026-06-01", "end": "2026-06-02", "bbox": "-73.6,-55.1,-53.6,-21.8"}).json()
+        assert older["missing"] == ["2026-06-01", "2026-06-02"]
+
+
+def test_backfill_marks_its_days_loaded(tmp_path):
+    client, _ = make_client(tmp_path, firms_map_key=KEY)
+    with client:
+        wait_until(lambda: not client.get("/api/health").json()["seeding"])
+        params = {"start": "2026-06-29", "end": "2026-06-30", "bbox": "-60,-30,-55,-25"}
+        assert client.get("/api/history/coverage", params=params).json()["missing"] == ["2026-06-29", "2026-06-30"]
+        job = run_job(client, {**params, "platforms": ["MODIS"]})
+        assert job["status"] == "done"
+        after = client.get("/api/history/coverage", params=params).json()
+        assert after["missing"] == [] and after["can_load"] is True
+        # a much bigger view around it is only partially loaded
+        wide = client.get("/api/history/coverage", params={**params, "bbox": "-80,-50,-40,-10"}).json()
+        assert {d["status"] for d in wide["days"]} == {"partial"}

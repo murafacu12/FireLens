@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Integer, Select, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.ingest.clustering import haversine_km
@@ -40,6 +40,11 @@ def _bbox_clause(stmt: Select, lat_col, lon_col, bbox: BBox) -> Select:
     return stmt.where(or_(lon_col >= w, lon_col <= e))  # crosses the antimeridian
 
 
+def _is_whole_world(bbox: BBox) -> bool:
+    w, s, e, n = bbox
+    return w <= -180 and e >= 180 and s <= -90 and n >= 90
+
+
 @dataclass
 class Area:
     bbox: BBox | None = None
@@ -52,7 +57,9 @@ class Area:
         return None not in (self.lat, self.lon, self.radius_km)
 
     def apply(self, stmt: Select, lat_col, lon_col) -> Select:
-        if self.bbox:
+        # A whole-world box (the zoomed-out globe sends one) filters nothing, but it steers SQLite
+        # onto the lat/lon index and makes wide queries ~2x slower than a plain scan.
+        if self.bbox and not _is_whole_world(self.bbox):
             stmt = _bbox_clause(stmt, lat_col, lon_col, self.bbox)
         if self.has_radius:
             stmt = _bbox_clause(stmt, lat_col, lon_col, radius_to_bbox(self.lat, self.lon, self.radius_km))
@@ -77,7 +84,7 @@ class DetectionFilter:
     limit: int = 5000
 
 
-def _filter_detections(stmt: Select, f: DetectionFilter) -> Select:
+def _where_detections(stmt: Select, f: DetectionFilter) -> Select:
     if f.start:
         stmt = stmt.where(DetectionRow.acquired_at >= to_naive_utc(f.start))
     if f.end:
@@ -99,7 +106,11 @@ def _filter_detections(stmt: Select, f: DetectionFilter) -> Select:
         stmt = stmt.where(DetectionRow.daynight == f.daynight.upper())
     if f.event_id:
         stmt = stmt.where(DetectionRow.event_id == f.event_id)
-    stmt = stmt.order_by(DetectionRow.acquired_at.desc())
+    return stmt
+
+
+def _filter_detections(stmt: Select, f: DetectionFilter) -> Select:
+    stmt = _where_detections(stmt, f).order_by(DetectionRow.acquired_at.desc())
     # With a radius the bbox pre-filter over-selects, so the limit is applied after the exact check.
     if not (f.area is not None and f.area.has_radius):
         stmt = stmt.limit(f.limit)
@@ -155,6 +166,45 @@ def query_detections_compact(session: Session, f: DetectionFilter) -> dict:
     return {"count": len(ids), "id": ids, "lat": lat, "lon": lon, "frp": frp, "conf": conf, "viirs": viirs, "t": t}
 
 
+def query_detection_grid(session: Session, f: DetectionFilter, cell_deg: float) -> dict:
+    """Aggregate detections into lat/lon cells for the zoomed-out map (grouped markers).
+
+    Each cell reports its detection count, intensity and a centroid (mean position of its
+    detections, so a bubble sits on the fires, not on an arbitrary grid corner). With a
+    radius filter the cells use its bounding box (approximate at the circle's edge).
+    """
+    is_pg = session.get_bind().dialect.name == "postgresql"
+
+    def index(expr):
+        # SQLite's CAST truncates, which is floor() here because the shifted value is >= 0.
+        return func.floor(expr) if is_pg else cast(expr, Integer)
+
+    gy = index((DetectionRow.latitude + 90) / cell_deg).label("gy")
+    gx = index((DetectionRow.longitude + 180) / cell_deg).label("gx")
+    stmt = select(
+        gy,
+        gx,
+        func.count().label("n"),
+        func.avg(DetectionRow.latitude).label("lat"),
+        func.avg(DetectionRow.longitude).label("lon"),
+        func.max(DetectionRow.frp_mw).label("max_frp"),
+        func.sum(DetectionRow.frp_mw).label("sum_frp"),
+        func.sum(case((DetectionRow.instrument == "VIIRS", 1), else_=0)).label("viirs"),
+    )
+    stmt = _where_detections(stmt, f).group_by(gy, gx)
+    cells: dict[str, list] = {"lat": [], "lon": [], "count": [], "max_frp": [], "sum_frp": [], "viirs": []}
+    total = 0
+    for r in session.execute(stmt):
+        total += r.n
+        cells["lat"].append(round(r.lat, 4))
+        cells["lon"].append(round(r.lon, 4))
+        cells["count"].append(r.n)
+        cells["max_frp"].append(round(r.max_frp, 1) if r.max_frp is not None else None)
+        cells["sum_frp"].append(round(r.sum_frp or 0, 1))
+        cells["viirs"].append(int(r.viirs or 0))
+    return {"cell_deg": cell_deg, "total": total, "cells": len(cells["count"]), **cells}
+
+
 @dataclass
 class EventFilter:
     start: datetime | None = None
@@ -171,8 +221,7 @@ class EventFilter:
     limit: int = 1000
 
 
-def query_events(session: Session, f: EventFilter) -> list[FireEvent]:
-    stmt = select(EventRow)
+def _where_events(stmt: Select, f: EventFilter) -> Select:
     if f.start:  # events overlapping [start, end]
         stmt = stmt.where(EventRow.end_at >= to_naive_utc(f.start))
     if f.end:
@@ -195,6 +244,16 @@ def query_events(session: Session, f: EventFilter) -> list[FireEvent]:
         stmt = stmt.where(EventRow.modis_count > 0)
     elif f.instrument == "VIIRS":
         stmt = stmt.where(EventRow.viirs_count > 0)
+    return stmt
+
+
+def count_events(session: Session, f: EventFilter) -> int:
+    """Number of events matching the filters (radius filter counted on its bounding box)."""
+    return session.scalar(_where_events(select(func.count()).select_from(EventRow), f)) or 0
+
+
+def query_events(session: Session, f: EventFilter) -> list[FireEvent]:
+    stmt = _where_events(select(EventRow), f)
     order = {
         "area": EventRow.area_km2.desc(),
         "frp": EventRow.max_frp_mw.desc(),

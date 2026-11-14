@@ -39,6 +39,19 @@ export interface CompactDetections {
   t: number[]; // epoch seconds
 }
 
+/** Grouped markers for the zoomed-out map (GET /api/detections/grid). Columnar per cell. */
+export interface DetectionGrid {
+  cell_deg: number;
+  total: number; // exact number of matching detections
+  cells: number;
+  lat: number[]; // centroid of the cell's detections
+  lon: number[];
+  count: number[];
+  max_frp: (number | null)[];
+  sum_frp: number[];
+  viirs: number[];
+}
+
 export interface FireEvent {
   id: string;
   latitude: number;
@@ -138,6 +151,8 @@ export interface Health {
   history_enabled: boolean;
   public_region: string;
   seeding: boolean;
+  latest_detection_at: string | null;
+  refresh_minutes: number;
   copernicus_enabled: boolean;
   detections: number;
   events: number;
@@ -198,6 +213,8 @@ export const api = {
   health: () => request<Health>("/api/health"),
   detections: (p: Params) => request<FireDetection[]>(`/api/detections${query(p)}`),
   detectionsCompact: (p: Params) => request<CompactDetections>(`/api/detections/compact${query(p)}`),
+  grid: (p: Params) => request<DetectionGrid>(`/api/detections/grid${query(p)}`),
+  eventsCount: (p: Params) => request<{ count: number }>(`/api/events/count${query(p)}`),
   detection: (id: string) => request<FireDetection>(`/api/detections/${encodeURIComponent(id)}`),
   events: (p: Params) => request<FireEvent[]>(`/api/events${query(p)}`),
   event: (id: string) => request<FireEventDetail>(`/api/events/${encodeURIComponent(id)}`),
@@ -210,6 +227,10 @@ export const api = {
   backfill: (body: { start: string; end: string; bbox?: string; country?: string }) =>
     request<BackfillJob>("/api/history/backfill", { method: "POST", body: JSON.stringify(body) }),
   jobs: () => request<BackfillJob[]>("/api/history/jobs"),
+  coverage: (p: Params) =>
+    request<{ days: { date: string; status: "loaded" | "partial" | "missing"; covered: number }[]; missing: string[]; can_load: boolean }>(
+      `/api/history/coverage${query(p)}`,
+    ),
   countries: () => request<{ code: string; name: string; bbox: string }[]>("/api/history/countries"),
   job: (id: string) => request<BackfillJob>(`/api/history/jobs/${encodeURIComponent(id)}`),
   cancelJob: (id: string) => request<BackfillJob>(`/api/history/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),

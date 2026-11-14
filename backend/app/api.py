@@ -26,7 +26,8 @@ from app.schemas import (
 )
 from app.services import queries
 from app.services.ndvi import CopernicusNdvi, NdviResult
-from app.services.history import COUNTRY_BBOX, BackfillJob, BackfillRequest, run_backfill
+from app.services.coverage import day_status
+from app.services.history import COUNTRY_BBOX, MAX_BACKFILL_DAYS, BackfillJob, BackfillRequest, run_backfill
 from app.services.pipeline import firms_client, run_ingest
 from app.services.risk import RiskForecast, activity_trend, compute_risk, fetch_weather
 
@@ -85,6 +86,9 @@ def health(request: Request, session: SessionDep, settings: SettingsDep):
         "detections": session.scalar(select(func.count()).select_from(DetectionRow)),
         "events": session.scalar(select(func.count()).select_from(EventRow)),
         "last_ingest": last.finished_at.replace(tzinfo=UTC) if last else None,
+        # newest satellite observation in the database: how fresh "Latest" really is
+        "latest_detection_at": (newest.replace(tzinfo=UTC) if (newest := session.scalar(select(func.max(DetectionRow.acquired_at)))) else None),
+        "refresh_minutes": settings.ingest_interval_minutes if not settings.is_demo else 0,
     }
 
 
@@ -132,6 +136,17 @@ def list_detections_compact(session: SessionDep, f: DetectionFilterDep):
     return queries.query_detections_compact(session, f)
 
 
+@router.get("/detections/grid")
+def detection_grid(
+    session: SessionDep,
+    f: DetectionFilterDep,
+    cell_deg: Annotated[float, Query(ge=0.01, le=10, description="Cell size in degrees")] = 1.0,
+):
+    """Grouped markers for the zoomed-out map: per-cell count, intensity and centroid.
+    `total` is the exact number of matching detections (no row limit applies)."""
+    return queries.query_detection_grid(session, f, cell_deg)
+
+
 @router.get("/detections/{detection_id}", response_model=FireDetection)
 def get_detection(detection_id: str, session: SessionDep):
     row = session.get(DetectionRow, detection_id)
@@ -140,9 +155,7 @@ def get_detection(detection_id: str, session: SessionDep):
     return FireDetection.model_validate(row)
 
 
-@router.get("/events", response_model=list[FireEvent])
-def list_events(
-    session: SessionDep,
+def event_filter(
     area: AreaDep,
     start: datetime | None = None,
     end: datetime | None = None,
@@ -155,13 +168,26 @@ def list_events(
     instrument: Literal["MODIS", "VIIRS"] | None = None,
     sort: Literal["recent", "area", "frp"] = "recent",
     limit: Annotated[int, Query(ge=1, le=10000)] = 1000,
-):
-    f = queries.EventFilter(
+) -> queries.EventFilter:
+    return queries.EventFilter(
         start=start, end=end, area=area, min_area=min_area, max_area=max_area, min_frp=min_frp,
         min_detections=min_detections, min_confidence_pct=min_confidence_pct, status=status,
         instrument=instrument, sort=sort, limit=limit,
     )
+
+
+EventFilterDep = Annotated[queries.EventFilter, Depends(event_filter)]
+
+
+@router.get("/events", response_model=list[FireEvent])
+def list_events(session: SessionDep, f: EventFilterDep):
     return queries.query_events(session, f)
+
+
+@router.get("/events/count")
+def events_count(session: SessionDep, f: EventFilterDep):
+    """Exact number of matching events (the list endpoint is capped by `limit`)."""
+    return {"count": queries.count_events(session, f)}
 
 
 @router.get("/events/{event_id}", response_model=FireEventDetail)
@@ -302,6 +328,31 @@ async def history_availability(settings: SettingsDep, http: HttpDep):
     return {
         "products": {k: {"min_date": v[0].isoformat(), "max_date": v[1].isoformat()} for k, v in spans.items()},
         "key_status": status,
+    }
+
+
+@router.get("/history/coverage")
+def history_coverage(
+    session: SessionDep,
+    settings: SettingsDep,
+    start: date,
+    end: date,
+    bbox: Annotated[str | None, Query(description="west,south,east,north; omit for the whole world")] = None,
+):
+    """Per day: is the requested area loaded? `loaded` (>=80% of it), `partial` or `missing`."""
+    if start > end or (end - start).days >= MAX_BACKFILL_DAYS:
+        raise HTTPException(422, f"range must be 1-{MAX_BACKFILL_DAYS} days and start <= end")
+    try:
+        view = queries.parse_bbox(bbox)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    days = day_status(session, start, end, view)
+    if settings.is_demo:  # synthetic data covers everything it covers; nothing to load
+        days = [{**d, "status": "loaded"} for d in days]
+    return {
+        "days": days,
+        "missing": [d["date"] for d in days if d["status"] != "loaded"],
+        "can_load": bool(settings.firms_map_key) and not settings.is_demo,
     }
 
 

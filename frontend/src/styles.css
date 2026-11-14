@@ -35,7 +35,8 @@ button, input, select { font: inherit; color: inherit; }
 .badge { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: #12361f; color: var(--ok); border: 1px solid #1f5c33; white-space: nowrap; }
 .badge.demo { background: #3a2c0b; color: var(--warn); border-color: #6b5214; }
 
-.stats { display: flex; gap: 8px; padding: 0 16px 12px; align-items: center; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; align-items: center; }
+.stats .stats-note { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 11px; }
 .stats div { flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; }
 .stats b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
 .stats span { color: var(--muted); font-size: 12px; }
@@ -101,6 +102,8 @@ h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); text-transform: u
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #ff8a1f; vertical-align: middle; }
 .dot.viirs { border: 1px solid #fff; width: 8px; height: 8px; }
 .dot.modis { border: 1px solid #000; width: 12px; height: 12px; }
+.dot.bubble { width: 22px; height: 22px; border: 1.5px solid rgba(255,255,255,0.8); background: #ff8a1f; color: #fff;
+  font-size: 10px; font-weight: 600; text-align: center; line-height: 19px; text-shadow: 0 0 2px #000; }
 
 /* ------------------------------------------------------------- calendar */
 .cal-head { display: flex; align-items: center; justify-content: space-between; }
@@ -116,6 +119,18 @@ h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); text-transform: u
 .calendar .day.today { outline: 2px solid var(--info); }
 .calendar .day small { align-self: flex-end; color: #fff; font-size: 10px; background: rgba(0,0,0,0.45); border-radius: 4px; padding: 0 4px; }
 
+.segmented { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; margin-bottom: 10px; }
+.segmented button { flex: 1; background: none; border: none; color: var(--muted); font-weight: 500; padding: 6px; border-radius: 6px; }
+.segmented button.active { background: var(--panel-2); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+#mode-latest.hidden, #mode-history.hidden, .banner.hidden, .banner .hidden { display: none; }
+.chips button.active { border-color: var(--accent); color: var(--accent-2); }
+.chips { flex-wrap: wrap; margin-bottom: 6px; }
+.day-picker { align-items: flex-end; }
+.day-picker .icon { flex: 0 0 auto; padding: 4px 6px 10px; font-size: 22px; }
+.banner { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: #0c3247; border: 1px solid var(--info); }
+.banner.warn { background: #3a2c0b; border-color: var(--warn); }
+.banner.ok { background: #12361f; border-color: #1f5c33; }
+.banner p { margin: 0 0 6px; font-size: 12px; line-height: 1.4; }
 .history { margin-top: 16px; }
 .job.hidden { display: none; }
 .progress { height: 8px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; margin: 6px 0; }

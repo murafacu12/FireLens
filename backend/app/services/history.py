@@ -23,6 +23,7 @@ from app.ingest.firms_client import FirmsError, FirmsRateLimited
 from app.ingest.normalize import NormalizationError, normalize_csv
 from app.ingest.sources import PLATFORM_PRODUCTS, get_source
 from app.schemas import IngestReport
+from app.services.coverage import days_between
 from app.services.pipeline import firms_client, persist
 
 log = logging.getLogger(__name__)
@@ -183,6 +184,7 @@ async def run_backfill(
     client = firms_client(settings, http)
     req = job.request
     area = req.bbox or COUNTRY_BBOX[req.country][1]
+    area_bbox = tuple(float(x) for x in area.split(","))
     job.status = "running"
     try:
         availability = await client.data_availability()
@@ -214,7 +216,8 @@ async def run_backfill(
                     job.errors.append(f"{chunk.source} {chunk.start}: {exc}")
                 else:
                     report = IngestReport(demo=False, source_mode="firms_api", sources=[], stored=0, events_rebuilt=0, alerts_triggered=0)
-                    await run_in_threadpool(persist, factory, settings, result.detections, datetime.now(UTC), report)
+                    covered = (days_between(chunk.start, chunk.start + timedelta(days=chunk.days - 1)), area_bbox, chunk.source)
+                    await run_in_threadpool(persist, factory, settings, result.detections, datetime.now(UTC), report, [covered])
                     job.detections += report.stored
                     job.events_rebuilt += report.events_rebuilt
             job.done_chunks += 1

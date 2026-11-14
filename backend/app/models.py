@@ -4,9 +4,9 @@ SQLite is the default for development; the schema is plain SQL types so it runs 
 PostgreSQL unchanged (PostGIS geometry columns are a planned upgrade, see docs).
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -114,3 +114,24 @@ class IngestRunRow(Base):
     finished_at: Mapped[datetime] = mapped_column(DateTime)
     demo: Mapped[bool] = mapped_column(Boolean)
     summary: Mapped[str] = mapped_column(Text)
+
+
+class CoverageRow(Base):
+    """What was actually fetched: a day of one FIRMS product over one area.
+
+    Needed because "no detections" is ambiguous: no fires, or never loaded. The map's
+    History mode uses it to tell the user (and load the archive) when a day is missing.
+    """
+
+    __tablename__ = "coverage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    west: Mapped[float] = mapped_column(Float)
+    south: Mapped[float] = mapped_column(Float)
+    east: Mapped[float] = mapped_column(Float)
+    north: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (UniqueConstraint("day", "west", "south", "east", "north", "source", name="uq_coverage"),)

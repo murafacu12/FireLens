@@ -36,6 +36,16 @@ npm run dev        # http://localhost:5173 (proxies /api to :8000)
 
 Demo and live data use separate databases (`firelens-demo.db`, `firelens.db`) and never mix.
 
+### Latest vs History (Filters → Time)
+
+- **Latest**: a rolling window back from now (24 h, 48 h or 7 days). It shows how old the newest
+  satellite pass is (NASA publishes about 3 h after the overpass), refreshes itself every 5 minutes,
+  and has a button to pull the newest NASA data immediately.
+- **History**: pick a day or a range (‹ › step through days; or click a day in the Calendar). FireLens
+  records which days and areas it has loaded (`GET /api/history/coverage`). If the selected days
+  aren't loaded for the area in view, it loads them from the NASA archive automatically, for views
+  under 60° across and up to 31 days. This needs a MAP_KEY; each day costs one request per satellite.
+
 ### Loading fire history
 
 1. Get a free MAP_KEY at https://firms.modaps.eosdis.nasa.gov/api/map_key/
