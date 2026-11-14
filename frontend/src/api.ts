@@ -134,10 +134,31 @@ export interface RiskForecast {
 export interface Health {
   status: string;
   demo_mode: boolean;
+  data_source: "demo" | "firms_public" | "firms_api";
+  history_enabled: boolean;
+  public_region: string;
+  seeding: boolean;
   copernicus_enabled: boolean;
   detections: number;
   events: number;
   last_ingest: string | null;
+}
+
+export interface BackfillJob {
+  id: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  request: { start: string; end: string; bbox: string | null; country: string | null; platforms: string[] };
+  total_chunks: number;
+  done_chunks: number;
+  failed_chunks: number;
+  progress: number;
+  detections: number;
+  events_rebuilt: number;
+  current: string | null;
+  notes: string[];
+  errors: string[];
+  created_at: string;
+  finished_at: string | null;
 }
 
 type Params = Record<string, string | number | boolean | string[] | null | undefined>;
@@ -186,5 +207,11 @@ export const api = {
   deleteRule: (id: number) => request<void>(`/api/alerts/rules/${id}`, { method: "DELETE" }),
   alerts: () => request<Alert[]>("/api/alerts"),
   risk: (lat: number, lon: number) => request<RiskForecast>(`/api/risk${query({ lat, lon })}`),
+  backfill: (body: { start: string; end: string; bbox?: string; country?: string }) =>
+    request<BackfillJob>("/api/history/backfill", { method: "POST", body: JSON.stringify(body) }),
+  jobs: () => request<BackfillJob[]>("/api/history/jobs"),
+  countries: () => request<{ code: string; name: string; bbox: string }[]>("/api/history/countries"),
+  job: (id: string) => request<BackfillJob>(`/api/history/jobs/${encodeURIComponent(id)}`),
+  cancelJob: (id: string) => request<BackfillJob>(`/api/history/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   ingest: (body: object = {}) => request<unknown>("/api/ingest", { method: "POST", body: JSON.stringify(body) }),
 };

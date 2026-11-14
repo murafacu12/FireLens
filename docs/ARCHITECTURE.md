@@ -30,7 +30,7 @@ historical fire calendar, alerts, and fire-danger prediction from weather, fuel 
 | Module | Responsibility |
 |---|---|
 | `ingest/sources.py` | Registry of FIRMS products (instrument, platform, NRT/SP, resolution). |
-| `ingest/firms_client.py` | FIRMS area API client. Splits long ranges into chunks within `DAY_RANGE` and redacts the MAP_KEY from errors. |
+| `ingest/firms_client.py` | FIRMS client. Keyless public files (24h/48h/7d per region). With a key: the area API (chunked to `DAY_RANGE`), data availability and key status. Detects rate limiting and redacts the MAP_KEY from every error. |
 | `ingest/normalize.py` | MODIS/VIIRS → `FireDetection`. See [DATA_HARMONIZATION.md](DATA_HARMONIZATION.md). |
 | `ingest/clustering.py` | Detections → fire events (space-time union-find, footprint area). |
 | `ingest/demo.py` | Synthetic FIRMS-format CSVs, so the full pipeline runs without a key. |
@@ -39,7 +39,8 @@ historical fire calendar, alerts, and fire-danger prediction from weather, fuel 
 | `services/alerts.py` | Rules (box or circle + thresholds) evaluated on active events after each ingest. Deduplicated per (rule, event). Severity levels. Best-effort webhooks. |
 | `services/risk.py` | Baseline fire-danger forecast (7 days). Transparent heuristic, see below. |
 | `services/ndvi.py` | Copernicus Data Space OAuth + Statistical API, cloud-masked mean NDVI. |
-| `services/pipeline.py` | Orchestrates fetch → normalize → store → events → alerts. Logs each run. |
+| `services/pipeline.py` | Orchestrates fetch → normalize → store → events → alerts. Routine refreshes always use the free public files; the key is reserved for explicit area, date or history requests. |
+| `services/history.py` | History backfill. Plans SP-else-NRT per platform and day from `data_availability`, groups days into API-sized chunks, and runs as a background job with progress, partial-failure reporting and rate-limit retries. |
 | `main.py` | App factory, lifespan (DB, HTTP client, demo seed, optional scheduler). |
 
 ### Fire-danger baseline (`/api/risk`)

@@ -13,8 +13,11 @@ from pydantic import BaseModel
 
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 STATS_URL = "https://sh.dataspace.copernicus.eu/api/v1/statistics"
+CACHE_TTL_S = 24 * 3600
 
-# Clouds, cloud shadow, cirrus and snow (Scene Classification) are masked out.
+# Scene Classification (SCL) classes excluded from the vegetation mean:
+# 0 no data, 1 saturated/defective, 3 cloud shadow, 6 water, 8-9 cloud, 10 cirrus, 11 snow.
+# Water matters: its NDVI is negative and pulled riverside/wetland means far below the vegetation's.
 EVALSCRIPT = """//VERSION=3
 function setup() {
   return {
@@ -26,7 +29,7 @@ function setup() {
   };
 }
 function evaluatePixel(s) {
-  var invalid = [3, 8, 9, 10, 11].indexOf(s.SCL) !== -1;
+  var invalid = [0, 1, 3, 6, 8, 9, 10, 11].indexOf(s.SCL) !== -1;
   var ndvi = (s.B08 - s.B04) / (s.B08 + s.B04 + 1e-6);
   return { ndvi: [ndvi], dataMask: [s.dataMask && !invalid ? 1 : 0] };
 }"""
@@ -49,6 +52,8 @@ class CopernicusNdvi:
         self._secret = client_secret
         self._token: str | None = None
         self._token_exp = 0.0
+        # NDVI changes over days, not minutes; each request spends Copernicus processing units.
+        self._cache: dict[tuple[float, float], tuple[float, NdviResult]] = {}
 
     async def _access_token(self) -> str:
         if self._token and time.time() < self._token_exp - 60:
@@ -65,6 +70,18 @@ class CopernicusNdvi:
         return self._token
 
     async def mean_ndvi(self, lat: float, lon: float, half_size_km: float = 2.5, days: int = 30) -> NdviResult:
+        key = (round(lat, 2), round(lon, 2))  # ~1 km cells share a result
+        hit = self._cache.get(key)
+        if hit and time.time() - hit[0] < CACHE_TTL_S:
+            return hit[1]
+        result = await self._query(lat, lon, half_size_km, days)
+        if result.ndvi_mean is not None:  # don't pin a cloudy miss for a whole day
+            if len(self._cache) > 5000:
+                self._cache.clear()
+            self._cache[key] = (time.time(), result)
+        return result
+
+    async def _query(self, lat: float, lon: float, half_size_km: float, days: int) -> NdviResult:
         dlat = half_size_km / 110.574
         dlon = half_size_km / (111.320 * max(math.cos(math.radians(lat)), 1e-3))
         end = datetime.now(UTC)

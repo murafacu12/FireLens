@@ -137,6 +137,34 @@
           <p class="hint">Colour = detections per day. Click a day to load that day's fires.</p>
           <h3 id="cal-day-title"></h3>
           <ul id="cal-events" class="list"></ul>
+
+          <form id="history-form" class="history">
+            <fieldset>
+              <legend>Fire history (NASA FIRMS archive)</legend>
+              <p class="hint" id="history-coverage"></p>
+              <div id="history-controls">
+                <div class="row">
+                  <label>From <input type="date" name="start" required /></label>
+                  <label>To <input type="date" name="end" required /></label>
+                </div>
+                <div class="row">
+                  <label>Area
+                    <select name="scope">
+                      <option value="country" selected>Country (ISO code)</option>
+                      <option value="view">Current globe view</option>
+                    </select>
+                  </label>
+                  <label>Country <select name="country"><option value="ARG">Argentina</option></select></label>
+                </div>
+                <div class="actions"><button type="submit" id="history-start">Load history</button></div>
+              </div>
+              <div id="history-job" class="job hidden">
+                <div class="progress"><div class="bar"></div></div>
+                <p class="hint job-text"></p>
+                <button type="button" id="history-cancel" class="secondary small">Cancel</button>
+              </div>
+            </fieldset>
+          </form>
         </section>
 
         <section id="tab-alerts" class="panel">

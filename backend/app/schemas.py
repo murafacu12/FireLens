@@ -94,9 +94,11 @@ class CalendarDay(BaseModel):
 
 class IngestRequest(BaseModel):
     sources: list[str] | None = None
-    area: str | None = Field(None, description="'world' or 'west,south,east,north'")
+    area: str | None = Field(None, description="API mode: 'world' or 'west,south,east,north'")
     days: int | None = Field(None, ge=1, le=31)
-    date: str | None = Field(None, description="Start date YYYY-MM-DD (for archive/SP sources)")
+    date: str | None = Field(None, description="API mode: start date YYYY-MM-DD")
+    region: str | None = Field(None, description="Keyless mode: FIRMS public-file region, e.g. South_America")
+    window: Literal["24h", "48h", "7d"] | None = Field(None, description="Keyless mode: public-file window")
 
 
 class SourceReport(BaseModel):
@@ -109,6 +111,7 @@ class SourceReport(BaseModel):
 
 class IngestReport(BaseModel):
     demo: bool
+    source_mode: str = "demo"  # demo | firms_public | firms_api
     sources: list[SourceReport]
     stored: int
     events_rebuilt: int

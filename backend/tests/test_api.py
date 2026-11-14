@@ -8,7 +8,7 @@ from app.main import create_app
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
     db = tmp_path_factory.mktemp("db") / "test.db"
-    settings = Settings(database_url=f"sqlite:///{db}", demo_mode=True, demo_days=30, firms_map_key=None)
+    settings = Settings(_env_file=None, database_url=f"sqlite:///{db}", demo_mode=True, demo_days=30)
     with TestClient(create_app(settings)) as c:
         yield c
 

@@ -1,6 +1,8 @@
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Literal
 
+import asyncio
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -8,7 +10,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.ingest.sources import SOURCES
+from app.ingest.firms_client import FirmsError
+from app.ingest.sources import PUBLIC_REGIONS, SOURCES
 from app.models import AlertRow, AlertRuleRow, DetectionRow, EventRow, IngestRunRow
 from app.schemas import (
     Alert,
@@ -23,7 +26,8 @@ from app.schemas import (
 )
 from app.services import queries
 from app.services.ndvi import CopernicusNdvi, NdviResult
-from app.services.pipeline import run_ingest
+from app.services.history import COUNTRY_BBOX, BackfillJob, BackfillRequest, run_backfill
+from app.services.pipeline import firms_client, run_ingest
 from app.services.risk import RiskForecast, activity_trend, compute_risk, fetch_weather
 
 router = APIRouter(prefix="/api")
@@ -67,11 +71,16 @@ AreaDep = Annotated[queries.Area | None, Depends(area_params)]
 
 
 @router.get("/health")
-def health(session: SessionDep, settings: SettingsDep):
+def health(request: Request, session: SessionDep, settings: SettingsDep):
     last = session.scalars(select(IngestRunRow).order_by(IngestRunRow.id.desc()).limit(1)).first()
     return {
         "status": "ok",
         "demo_mode": settings.is_demo,
+        # demo | firms_public (keyless, last 7 days) | firms_api (MAP_KEY: history + any area)
+        "data_source": settings.data_source,
+        "history_enabled": bool(settings.firms_map_key) and not settings.is_demo,
+        "public_region": settings.public_region,
+        "seeding": getattr(request.app.state, "seeding", False),
         "copernicus_enabled": settings.copernicus_enabled,
         "detections": session.scalar(select(func.count()).select_from(DetectionRow)),
         "events": session.scalar(select(func.count()).select_from(EventRow)),
@@ -81,7 +90,7 @@ def health(session: SessionDep, settings: SettingsDep):
 
 @router.get("/sources")
 def sources():
-    return [vars(s) for s in SOURCES.values()]
+    return {"sources": [vars(s) for s in SOURCES.values()], "public_regions": PUBLIC_REGIONS}
 
 
 @router.post("/ingest", response_model=IngestReport)
@@ -260,3 +269,79 @@ async def get_ndvi(
         return await client.mean_ndvi(lat, lon)
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Copernicus request failed: {exc}") from None
+
+
+# ---------------------------------------------------------------------------- history
+
+
+def _require_history(settings: Settings) -> None:
+    if settings.is_demo:
+        raise HTTPException(409, "History backfill is disabled in demo mode.")
+    if not settings.firms_map_key:
+        raise HTTPException(
+            400,
+            "History needs a FIRMS MAP_KEY (free: https://firms.modaps.eosdis.nasa.gov/api/map_key/). "
+            "Set FIRELENS_FIRMS_MAP_KEY in .env and restart the API. Without it, FireLens keeps the last 7 days "
+            "of real data from the public FIRMS files.",
+        )
+
+
+@router.get("/history/availability")
+async def history_availability(settings: SettingsDep, http: HttpDep):
+    """Date span FIRMS serves per product, plus the MAP_KEY's transaction usage."""
+    _require_history(settings)
+    client = firms_client(settings, http)
+    try:
+        spans = await client.data_availability()
+    except FirmsError as exc:
+        raise HTTPException(502, str(exc)) from None
+    try:
+        status = await client.key_status()
+    except FirmsError:
+        status = None
+    return {
+        "products": {k: {"min_date": v[0].isoformat(), "max_date": v[1].isoformat()} for k, v in spans.items()},
+        "key_status": status,
+    }
+
+
+@router.get("/history/countries")
+def history_countries():
+    """Countries loadable by name; each maps to a bounding box for the FIRMS area API."""
+    return [{"code": k, "name": v[0], "bbox": v[1]} for k, v in COUNTRY_BBOX.items()]
+
+
+@router.post("/history/backfill", status_code=202)
+async def start_backfill(req: BackfillRequest, request: Request, settings: SettingsDep, http: HttpDep):
+    _require_history(settings)
+    jobs: dict[str, BackfillJob] = request.app.state.jobs
+    if any(j.status in ("queued", "running") for j in jobs.values()):
+        raise HTTPException(409, "A backfill is already running; wait for it or cancel it.")
+    job = BackfillJob(request=req)
+    jobs[job.id] = job
+    job.task = asyncio.create_task(run_backfill(job, request.app.state.session_factory, settings, http))
+    return job.public()
+
+
+@router.get("/history/jobs")
+def list_jobs(request: Request):
+    jobs = sorted(request.app.state.jobs.values(), key=lambda j: j.created_at, reverse=True)
+    return [j.public() for j in jobs]
+
+
+@router.get("/history/jobs/{job_id}")
+def get_job(job_id: str, request: Request):
+    job = request.app.state.jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    return job.public()
+
+
+@router.delete("/history/jobs/{job_id}", status_code=202)
+def cancel_job(job_id: str, request: Request):
+    job = request.app.state.jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    if job.task and not job.task.done():
+        job.task.cancel()
+    return job.public()

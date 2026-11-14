@@ -22,7 +22,8 @@ class RiskComponents(BaseModel):
     hdw: float
     dryness: float
     activity: float
-    fuel: float | None
+    fuel: float | None  # dryness of the vegetation present (from NDVI)
+    fuel_load: float | None = None  # is there vegetation to burn at all; multiplies the score
 
 
 class RiskDay(BaseModel):
@@ -41,7 +42,7 @@ class RiskDay(BaseModel):
 class RiskForecast(BaseModel):
     latitude: float
     longitude: float
-    model: str = "baseline-hdw-v0"
+    model: str = "baseline-hdw-v1"
     disclaimer: str = "Heuristic baseline for exploration; not an official fire-danger rating."
     nearby_detections_7d: int
     nearby_detections_prev_7d: int
@@ -60,6 +61,18 @@ def vpd_hpa(t_c: float, rh_pct: float) -> float:
 
 def _clamp(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def fuel_load(ndvi: float) -> float:
+    """Is there enough vegetation to carry a fire? 0 for bare ground/rock/sand (NDVI <= 0.10),
+    rising to 1 once there is continuous cover (NDVI >= 0.25). Gates the whole score."""
+    return _clamp((ndvi - 0.10) / 0.15)
+
+
+def fuel_dryness(ndvi: float) -> float:
+    """How cured is the vegetation that exists? 1 for dry grass/shrub (NDVI <= 0.25),
+    falling to 0 for lush green canopy (NDVI >= 0.75)."""
+    return _clamp(1 - (ndvi - 0.25) / 0.5)
 
 
 def risk_level(score: float) -> str:
@@ -85,7 +98,8 @@ def compute_risk(daily: dict, today: date, nearby_7d: int, ndvi: float | None) -
     rain = daily.get("precipitation_sum", [])
 
     activity = _clamp(nearby_7d / 50)
-    fuel = None if ndvi is None else _clamp(1 - (ndvi - 0.2) / 0.5)  # sparse/cured vegetation -> higher
+    fuel = None if ndvi is None else fuel_dryness(ndvi)
+    load = 1.0 if ndvi is None else fuel_load(ndvi)  # unknown fuel: don't gate (weather-only estimate)
     weights = dict(WEIGHTS)
     if fuel is None:
         weights.pop("fuel")
@@ -106,7 +120,9 @@ def compute_risk(daily: dict, today: date, nearby_7d: int, ndvi: float | None) -
             "activity": activity,
             "fuel": fuel,
         }
-        score = 100 * sum(comps[k] * wgt for k, wgt in weights.items()) / total_w
+        # No fuel, no fire: a hot, dry, windy desert is not fire danger.
+        score = 100 * load * sum(comps[k] * wgt for k, wgt in weights.items()) / total_w
+        comps["fuel_load"] = None if ndvi is None else load
         out.append(
             RiskDay(
                 date=day,

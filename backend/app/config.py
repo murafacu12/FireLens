@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -6,36 +7,42 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Runtime configuration. Every field can be set with a FIRELENS_* env var or a .env file.
 
-    List values are given as JSON, e.g. FIRELENS_INGEST_SOURCES='["MODIS_NRT","VIIRS_SNPP_NRT"]'.
+    List values are given as JSON, e.g. FIRELENS_INGEST_SOURCES='["MODIS_NRT","VIIRS_NOAA20_NRT"]'.
     """
 
     model_config = SettingsConfigDict(
         env_prefix="FIRELENS_", env_file=(".env", "../.env"), extra="ignore"
     )
 
-    # NASA FIRMS (https://firms.modaps.eosdis.nasa.gov/api/map_key/)
+    # NASA FIRMS. Without a MAP_KEY FireLens still runs on REAL data from the public
+    # active-fire files (last 7 days). The key unlocks history (any date, SP archive).
+    # https://firms.modaps.eosdis.nasa.gov/api/map_key/
     firms_map_key: str | None = None
     firms_base_url: str = "https://firms.modaps.eosdis.nasa.gov"
     firms_max_day_range: int = 5
+    firms_request_pause_s: float = 1.0  # be polite with the transaction budget during backfills
 
-    # Demo mode generates synthetic FIRMS-format CSVs so the full pipeline runs without a MAP_KEY.
-    # None = automatic (demo when no MAP_KEY is configured).
-    demo_mode: bool | None = None
+    # Synthetic data for offline development / UI work. Opt-in.
+    demo_mode: bool = False
     demo_days: int = 30
 
-    database_url: str = "sqlite:///./firelens.db"
+    # Default: separate files so demo and real data never mix (see database_url_effective).
+    database_url: str | None = None
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
-    # Periodic NRT ingestion (0 disables the scheduler).
-    ingest_interval_minutes: int = 0
+    # Near-real-time ingestion
+    ingest_interval_minutes: int = 60  # 0 disables the scheduler; FIRMS NRT refreshes every few hours
     ingest_sources: list[str] = [
         "MODIS_NRT",
         "VIIRS_SNPP_NRT",
         "VIIRS_NOAA20_NRT",
         "VIIRS_NOAA21_NRT",
     ]
-    ingest_area: str = "world"
+    ingest_area: str = "world"  # explicit API requests (with key): 'world' or 'west,south,east,north'
     ingest_days: int = 1
+    public_region: str = "South_America"  # seed + scheduled refresh: FIRMS public-file region (no key needed)
+    public_window: Literal["24h", "48h", "7d"] = "24h"  # what each scheduled refresh pulls
+    seed_window: Literal["24h", "48h", "7d"] = "7d"  # first start with an empty database
 
     # Event clustering
     cluster_tolerance_km: float = 1.0
@@ -49,9 +56,19 @@ class Settings(BaseSettings):
 
     @property
     def is_demo(self) -> bool:
-        if self.demo_mode is not None:
-            return self.demo_mode
-        return not self.firms_map_key
+        return self.demo_mode
+
+    @property
+    def data_source(self) -> str:
+        if self.demo_mode:
+            return "demo"
+        return "firms_api" if self.firms_map_key else "firms_public"
+
+    @property
+    def database_url_effective(self) -> str:
+        if self.database_url:
+            return self.database_url
+        return "sqlite:///./firelens-demo.db" if self.demo_mode else "sqlite:///./firelens.db"
 
     @property
     def copernicus_enabled(self) -> bool:

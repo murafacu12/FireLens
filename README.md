@@ -26,22 +26,35 @@ npm install
 npm run dev        # http://localhost:5173 (proxies /api to :8000)
 ```
 
-Without configuration the API starts in **demo mode**. It generates 30 days of synthetic
-data in the exact FIRMS CSV format, which runs through the real normalization and
-clustering pipeline. The UI shows a `DEMO DATA` badge.
+## Data modes
 
-### Live NASA data
+| Mode | When | What you get |
+|---|---|---|
+| **Live, keyless** (default) | no `FIRELENS_FIRMS_MAP_KEY` | Real NASA FIRMS detections from the public files for one region (`FIRELENS_PUBLIC_REGION`, default `South_America`). The last 7 days are loaded on first start and refreshed hourly. |
+| **Live + archive** | MAP_KEY set in `.env` | Everything above, plus **fire history**: any date range for a country or the current globe view, from NASA's science-quality archive (SP) and NRT for recent months. |
+| **Demo** | `FIRELENS_DEMO_MODE=true` | Synthetic FIRMS-format data for offline UI work. |
+
+Demo and live data use separate databases (`firelens-demo.db`, `firelens.db`) and never mix.
+
+### Loading fire history
 
 1. Get a free MAP_KEY at https://firms.modaps.eosdis.nasa.gov/api/map_key/
-2. Copy `.env.example` to `.env` and set `FIRELENS_FIRMS_MAP_KEY`.
-3. Delete `firelens.db` (demo data) and restart the API, then load data:
+2. Copy `.env.example` to `.env` (git-ignored), set `FIRELENS_FIRMS_MAP_KEY`, and restart the API.
+3. In the UI, open **Calendar → Fire history**, pick dates and a country (or the current view), and press **Load history**.
+
+Or use the API:
 
 ```bash
-curl -X POST localhost:8000/api/ingest -H "Content-Type: application/json" -d '{"days": 2}'
+curl -X POST localhost:8000/api/history/backfill -H "Content-Type: application/json" -d '{"start": "2026-07-25", "end": "2026-08-24", "country": "ARG"}'
 ```
 
-Set `FIRELENS_INGEST_INTERVAL_MINUTES=60` for continuous near-real-time ingestion. For
-history (calendar), ingest the SP archive: `{"sources": ["VIIRS_SNPP_SP"], "date": "2025-01-01", "days": 30, "area": "-75,-56,-53,-21"}`.
+For each satellite and day the job uses the SP archive where FIRMS has it, otherwise NRT. It
+splits requests to the API's 5-day limit and stores and clusters each chunk as it arrives. Progress
+is at `GET /api/history/jobs/{id}`. Measured: one month of Argentina took 28 requests and ~2 minutes,
+producing ~41k detections. A MAP_KEY allows 5,000 requests per 10 minutes.
+
+FIRMS has retired its country endpoint, so countries are loaded by bounding box
+(`GET /api/history/countries`). A box also includes slivers of neighbouring countries.
 
 ## API
 
@@ -58,7 +71,11 @@ Interactive docs at http://localhost:8000/docs.
 | `GET/POST/DELETE /api/alerts/rules`, `GET /api/alerts` | Alert rules (box or circle + thresholds, optional webhook) and triggered alerts |
 | `GET /api/risk?lat&lon` | 7-day fire-danger baseline (HDW, dryness, activity, NDVI) |
 | `GET /api/ndvi?lat&lon` | Sentinel-2 NDVI (needs Copernicus credentials) |
-| `POST /api/ingest` | Run an ingestion (FIRMS or demo) |
+| `POST /api/ingest` | Run an ingestion now (public files by `region`/`window`; `area`/`date`/`days` need the key) |
+| `POST /api/history/backfill` | Load history for `start`..`end` and a `country` or `bbox` (needs the key) |
+| `GET /api/history/jobs[/{id}]`, `DELETE /api/history/jobs/{id}` | Backfill progress / cancel |
+| `GET /api/history/availability` | Date span per FIRMS product and your key's transaction usage |
+| `GET /api/history/countries` | Countries loadable by name (mapped to bounding boxes) |
 
 ## Tests
 

@@ -1,6 +1,6 @@
 import "./styles.css";
 
-import { api, type AlertRuleIn, type CalendarDay } from "./api";
+import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health } from "./api";
 import { closeDetails, showDetection, showEvent, showPoint, wireDetails } from "./details";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
@@ -322,18 +322,140 @@ $("#alerts").addEventListener("click", (e) => {
   }
 });
 
+// ---------------------------------------------------------------- history (FIRMS archive)
+const historyForm = $<HTMLFormElement>("#history-form");
+let health: Health | null = null;
+let jobTimer: number | undefined;
+
+async function loadCountries(): Promise<void> {
+  const select = historyForm.elements.namedItem("country") as HTMLSelectElement;
+  const countries = await api.countries().catch(() => []);
+  if (!countries.length) return;
+  select.innerHTML = countries
+    .map((c) => `<option value="${esc(c.code)}"${c.code === "ARG" ? " selected" : ""}>${esc(c.name)}</option>`)
+    .join("");
+}
+
+function renderHistoryAvailability(): void {
+  const coverage = $("#history-coverage");
+  const enabled = !!health?.history_enabled;
+  $("#history-controls").classList.toggle("hidden", !enabled);
+  if (!health) return;
+  if (health.data_source === "demo") {
+    coverage.textContent = "Demo mode: history uses real NASA data only. Start the API without FIRELENS_DEMO_MODE.";
+  } else if (!enabled) {
+    coverage.innerHTML = `Showing real FIRMS data for <b>${esc(health.public_region.replaceAll("_", " "))}</b> from the public files
+      (last 7 days, refreshed hourly). To load older fires, add a free
+      <a href="https://firms.modaps.eosdis.nasa.gov/api/map_key/" target="_blank" rel="noopener">FIRMS MAP_KEY</a>
+      as <code>FIRELENS_FIRMS_MAP_KEY</code> in <code>.env</code> and restart the API.`;
+  } else {
+    coverage.textContent = "Loads NASA's science-quality archive (SP) where available and near-real-time data for recent months.";
+  }
+}
+
+function renderJob(job: BackfillJob): void {
+  const box = $("#history-job");
+  box.classList.remove("hidden");
+  $(".bar", box).style.width = `${Math.round(job.progress * 100)}%`;
+  const running = job.status === "queued" || job.status === "running";
+  const parts = [
+    `<b>${esc(job.status)}</b> · ${job.done_chunks}/${job.total_chunks || "?"} requests · ${job.detections.toLocaleString()} detections`,
+    job.current ? esc(job.current) : "",
+    ...job.notes.map(esc),
+    ...job.errors.slice(-3).map((e) => `<span class="err">${esc(e)}</span>`),
+  ].filter(Boolean);
+  $(".job-text", box).innerHTML = parts.join("<br>");
+  $("#history-cancel").classList.toggle("hidden", !running);
+  $<HTMLButtonElement>("#history-start").disabled = running;
+}
+
+function watchJob(id: string): void {
+  window.clearTimeout(jobTimer);
+  const tick = async () => {
+    try {
+      const job = await api.job(id);
+      renderJob(job);
+      if (job.status === "queued" || job.status === "running") {
+        jobTimer = window.setTimeout(tick, 2000);
+        return;
+      }
+      if (job.status === "done") {
+        const partial = job.failed_chunks ? ` (${job.failed_chunks} of ${job.total_chunks} requests failed)` : "";
+        toast(`History loaded: ${job.detections.toLocaleString()} detections${partial}.`, job.failed_chunks ? "error" : "info");
+      } else if (job.status === "failed") {
+        toast(`History load failed: ${job.errors.at(-1) ?? "no data returned"}`, "error");
+      }
+      await Promise.all([renderCalendar(), refresh()]);
+    } catch (err) {
+      toast(`Lost track of the history job: ${(err as Error).message}`, "error");
+    }
+  };
+  void tick();
+}
+
+historyForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(historyForm);
+  const body: { start: string; end: string; bbox?: string; country?: string } = {
+    start: String(f.get("start")),
+    end: String(f.get("end")),
+  };
+  if (f.get("scope") === "view") {
+    const bbox = globe.viewBbox();
+    if (!bbox || bbox[0] >= bbox[2]) return toast("Point the camera at the area to load (it can't cross the 180° meridian).", "error");
+    body.bbox = bbox.join(",");
+  } else {
+    body.country = String(f.get("country") || "ARG");
+  }
+  try {
+    const job = await api.backfill(body);
+    renderJob(job);
+    watchJob(job.id);
+    // land the calendar on the month being loaded
+    calMonth = new Date(Date.UTC(Number(body.start.slice(0, 4)), Number(body.start.slice(5, 7)) - 1, 1));
+  } catch (err) {
+    toast(`Could not start history load: ${(err as Error).message}`, "error");
+  }
+});
+$("#history-cancel").addEventListener("click", async () => {
+  const jobs = await api.jobs().catch(() => [] as BackfillJob[]);
+  const running = jobs.find((j) => j.status === "running" || j.status === "queued");
+  if (running) renderJob(await api.cancelJob(running.id));
+});
+
 // ---------------------------------------------------------------- boot
+const SOURCE_BADGE: Record<Health["data_source"], [string, string]> = {
+  demo: ["DEMO DATA", "Synthetic FIRMS-format data (FIRELENS_DEMO_MODE=true)."],
+  firms_public: ["LIVE · FIRMS", "Real NASA FIRMS data from the public files (last 7 days). Add a MAP_KEY for history."],
+  firms_api: ["LIVE · FIRMS + ARCHIVE", "Real NASA FIRMS data; MAP_KEY configured, history available."],
+};
+
+async function loadHealth(): Promise<void> {
+  health = await api.health();
+  const badge = $("#mode-badge");
+  const [label, title] = SOURCE_BADGE[health.data_source];
+  badge.textContent = health.seeding ? "LOADING REAL DATA…" : label;
+  badge.classList.toggle("demo", health.data_source === "demo");
+  badge.classList.toggle("seeding", health.seeding);
+  badge.title = `${title} Last ingest: ${health.last_ingest ? fmtTime(health.last_ingest) : "never"}.`;
+  renderHistoryAvailability();
+}
+
 wireDetails((id) => void openEvent(id));
 setRange(7);
+(historyForm.elements.namedItem("end") as HTMLInputElement).value = isoDay(daysAgo(1));
+(historyForm.elements.namedItem("start") as HTMLInputElement).value = isoDay(daysAgo(30));
 (async () => {
   try {
-    const h = await api.health();
-    const badge = $("#mode-badge");
-    badge.textContent = h.demo_mode ? "DEMO DATA" : "LIVE · FIRMS";
-    badge.classList.toggle("demo", h.demo_mode);
-    badge.title = h.demo_mode
-      ? "Synthetic FIRMS-format data. Set FIRELENS_FIRMS_MAP_KEY on the backend for live NASA data."
-      : `Last ingest ${h.last_ingest ? fmtTime(h.last_ingest) : "never"}`;
+    await loadHealth();
+    // First start on real data: the API downloads the last 7 days in the background.
+    while ((health as Health | null)?.seeding) {
+      await new Promise((r) => setTimeout(r, 3000));
+      await loadHealth();
+    }
+    const running = (await api.jobs().catch(() => [] as BackfillJob[])).find((j) => j.status === "running" || j.status === "queued");
+    if (running) watchJob(running.id);
+    if ((health as Health | null)?.history_enabled) await loadCountries();
   } catch {
     toast("Backend not reachable on /api — is the API running on :8000?", "error");
   }
