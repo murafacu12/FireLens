@@ -1,4 +1,5 @@
 import {
+  CameraEventType,
   Cartesian2,
   Cartesian3,
   Cartographic,
@@ -11,11 +12,13 @@ import {
   GeometryInstance,
   ImageryLayer,
   Ion,
+  KeyboardEventModifier,
   LabelCollection,
   LabelStyle,
   Math as CesiumMath,
   NearFarScalar,
   OpenStreetMapImageryProvider,
+  type OrthographicOffCenterFrustum,
   PerInstanceColorAppearance,
   PointPrimitiveCollection,
   Primitive,
@@ -23,6 +26,7 @@ import {
   Rectangle,
   RectangleGeometry,
   RectangleOutlineGeometry,
+  SceneMode,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Terrain,
@@ -173,8 +177,13 @@ export class Globe {
     this.pinned = new Layer(scene.primitives);
 
     this.viewer.camera.setView({ destination: Cartesian3.fromDegrees(-62, -25, 9_000_000) });
+    this.setupZoomControls();
 
     const handler = new ScreenSpaceEventHandler(scene.canvas);
+    handler.setInputAction((e: { position: Cartesian2 }) => {
+      const cart = this.viewer.camera.pickEllipsoid(e.position, scene.globe.ellipsoid);
+      if (cart) this.zoomToward(cart);
+    }, ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
     handler.setInputAction((e: { position: Cartesian2 }) => {
       const picked = scene.pick(e.position);
       const id: unknown = picked?.id;
@@ -192,6 +201,64 @@ export class Globe {
         onPick({ kind: "point", lat: CesiumMath.toDegrees(c.latitude), lon: CesiumMath.toDegrees(c.longitude) });
       }
     }, ScreenSpaceEventType.LEFT_CLICK);
+  }
+
+  private setupZoomControls(): void {
+    const ctrl = this.viewer.scene.screenSpaceCameraController;
+    // Trackpad pinch arrives as wheel + Ctrl (Chrome, Edge, Firefox, Safari). Cesium binds only the
+    // plain wheel and swallows the Ctrl variant, so pinch-zoom silently did nothing.
+    ctrl.zoomEventTypes = [
+      CameraEventType.RIGHT_DRAG,
+      CameraEventType.WHEEL,
+      CameraEventType.PINCH,
+      { eventType: CameraEventType.WHEEL, modifier: KeyboardEventModifier.CTRL },
+    ];
+    ctrl.minimumZoomDistance = 300; // metres: street level, not inside the ground
+    ctrl.maximumZoomDistance = 40_000_000; // keep the whole Earth in view instead of a dot in space
+    // Cesium's default double-click tracks an entity; double-click zooms in here (handler above).
+    this.viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+    const box = document.createElement("div");
+    box.className = "zoom-controls";
+    box.innerHTML = `
+      <button type="button" data-zoom="in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+      <button type="button" data-zoom="out" title="Zoom out (−)" aria-label="Zoom out">−</button>`;
+    box.addEventListener("click", (e) => {
+      const dir = (e.target as HTMLElement).closest<HTMLElement>("[data-zoom]")?.dataset.zoom;
+      if (dir) this.zoomBy(dir === "in" ? 0.5 : 2);
+    });
+    this.viewer.container.appendChild(box);
+    window.addEventListener("keydown", (e) => {
+      if ((e.target as HTMLElement).closest("input, select, textarea")) return;
+      if (e.key === "+" || e.key === "=") this.zoomBy(0.5);
+      else if (e.key === "-" || e.key === "_") this.zoomBy(2);
+    });
+  }
+
+  /** Camera height in 3D/Columbus view, visible map width in 2D (metres). */
+  private currentDistance(): number {
+    const cam = this.viewer.camera;
+    if (this.viewer.scene.mode === SceneMode.SCENE2D) {
+      const f = cam.frustum as OrthographicOffCenterFrustum;
+      return (f.right ?? 0) - (f.left ?? 0);
+    }
+    return cam.positionCartographic.height;
+  }
+
+  /** Zoom by a factor of the current distance (< 1 zooms in), within the controller's limits. */
+  zoomBy(factor: number): void {
+    const ctrl = this.viewer.scene.screenSpaceCameraController;
+    const d = this.currentDistance();
+    const target = CesiumMath.clamp(d * factor, ctrl.minimumZoomDistance, ctrl.maximumZoomDistance);
+    if (target < d) this.viewer.camera.zoomIn(d - target);
+    else this.viewer.camera.zoomOut(target - d);
+    this.redraw();
+  }
+
+  private zoomToward(target: Cartesian3): void {
+    const c = Cartographic.fromCartesian(target);
+    const h = Math.max(this.currentDistance() * 0.5, this.viewer.scene.screenSpaceCameraController.minimumZoomDistance);
+    this.viewer.camera.flyTo({ destination: Cartesian3.fromRadians(c.longitude, c.latitude, h), duration: 0.6 });
   }
 
   /** In request-render mode, data and visibility changes must ask for a frame. One extra

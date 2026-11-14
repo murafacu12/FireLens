@@ -137,6 +137,13 @@ table.risk td { padding: 4px; border-bottom: 1px solid var(--line); }
 .picking { position: absolute; top: 12px; left: calc(360px + 50%); transform: translateX(-50%); z-index: 15;
   background: var(--info); color: #04202d; font-weight: 600; padding: 6px 12px; border-radius: 999px; }
 
+.zoom-controls { position: absolute; right: 12px; bottom: 40px; z-index: 5; display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
+.zoom-controls button { width: 36px; height: 36px; padding: 0; border: none; border-radius: 0; font-size: 20px; line-height: 1;
+  background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--text); font-weight: 500; }
+.zoom-controls button + button { border-top: 1px solid var(--line); }
+.zoom-controls button:hover { background: var(--panel-2); filter: none; }
+
 /* Cesium chrome */
 .cesium-viewer-bottom { opacity: 0.75; }
 .cesium-viewer-toolbar { top: 12px; right: 404px; }
