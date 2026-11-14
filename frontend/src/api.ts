@@ -27,6 +27,18 @@ export interface FireDetection {
   event_id: string | null;
 }
 
+/** Columnar render-only detections (GET /api/detections/compact). */
+export interface CompactDetections {
+  count: number;
+  id: string[];
+  lat: number[];
+  lon: number[];
+  frp: (number | null)[];
+  conf: number[]; // 0 low, 1 nominal, 2 high
+  viirs: number[]; // 1 VIIRS, 0 MODIS
+  t: number[]; // epoch seconds
+}
+
 export interface FireEvent {
   id: string;
   latitude: number;
@@ -164,6 +176,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<Health>("/api/health"),
   detections: (p: Params) => request<FireDetection[]>(`/api/detections${query(p)}`),
+  detectionsCompact: (p: Params) => request<CompactDetections>(`/api/detections/compact${query(p)}`),
+  detection: (id: string) => request<FireDetection>(`/api/detections/${encodeURIComponent(id)}`),
   events: (p: Params) => request<FireEvent[]>(`/api/events${query(p)}`),
   event: (id: string) => request<FireEventDetail>(`/api/events/${encodeURIComponent(id)}`),
   calendar: (p: Params) => request<CalendarDay[]>(`/api/calendar${query(p)}`),

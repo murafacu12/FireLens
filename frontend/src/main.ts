@@ -6,6 +6,8 @@ import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
 
 const filtersForm = $<HTMLFormElement>("#filters");
+const MAX_ZONE_DEG = 40; // an alert zone taken from a zoomed-out view would cover half the planet
+const MAX_POINTS = 50_000; // compact payload + batched points keep this cheap
 let picking = false;
 let focusEventId: string | null = null;
 
@@ -24,7 +26,9 @@ function onPick(r: PickResult): void {
     return;
   }
   if (r.kind === "event") void openEvent(r.eventId);
-  else if (r.kind === "detection") showDetection(r.detection);
+  else if (r.kind === "detection") {
+    api.detection(r.id).then(showDetection, (err: Error) => toast(`Could not load detection: ${err.message}`, "error"));
+  }
   else showPoint(r.lat, r.lon);
 }
 
@@ -96,7 +100,7 @@ function setRange(days: number): void {
 async function refresh(): Promise<void> {
   const f = readFilters();
   if (f.noSensor) {
-    globe.showDetections([]);
+    globe.showDetections({ count: 0, id: [], lat: [], lon: [], frp: [], conf: [], viirs: [], t: [] });
     globe.showEvents([]);
     renderStats(0, 0);
     return;
@@ -105,14 +109,14 @@ async function refresh(): Promise<void> {
     // Focus mode shows one fire's complete history, regardless of the sidebar filters.
     const [dets, events] = await Promise.all([
       focusEventId
-        ? api.detections({ event_id: focusEventId, limit: 50000 })
-        : api.detections({ ...f.common, ...f.detections, limit: 20000 }),
+        ? api.detectionsCompact({ event_id: focusEventId, limit: MAX_POINTS })
+        : api.detectionsCompact({ ...f.common, ...f.detections, limit: MAX_POINTS }),
       focusEventId ? Promise.resolve([]) : api.events({ ...f.common, ...f.events, limit: 5000 }),
     ]);
     globe.showDetections(dets);
     globe.showEvents(events);
-    renderStats(dets.length, events.length);
-    if (dets.length >= 20000) toast("Showing the 20,000 most recent detections — narrow the filters to see all.");
+    renderStats(dets.count, events.length);
+    if (dets.count >= MAX_POINTS) toast(`Showing the ${MAX_POINTS.toLocaleString()} most recent detections — narrow the filters to see all.`);
   } catch (err) {
     toast(`Failed to load data: ${(err as Error).message}`, "error");
   }
@@ -288,6 +292,11 @@ $<HTMLFormElement>("#rule-form").addEventListener("submit", async (e) => {
   } else {
     const bbox = globe.viewBbox();
     if (!bbox) return toast("Point the camera at the Earth to define the zone.", "error");
+    const [w, s, e, n] = bbox;
+    const width = e >= w ? e - w : e - w + 360; // view may cross the antimeridian
+    if (width > MAX_ZONE_DEG || n - s > MAX_ZONE_DEG) {
+      return toast(`Zoom in to the area to watch (view is ${Math.round(width)}° wide, max ${MAX_ZONE_DEG}°), or set a point + radius in Filters.`, "error");
+    }
     [rule.west, rule.south, rule.east, rule.north] = bbox;
   }
   try {

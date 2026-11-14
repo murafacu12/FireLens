@@ -2,19 +2,27 @@ import {
   Cartesian2,
   Cartesian3,
   Cartographic,
+  CircleGeometry,
+  CircleOutlineGeometry,
   Color,
+  ColorGeometryInstanceAttribute,
   Credit,
-  CustomDataSource,
   DistanceDisplayCondition,
-  Entity,
+  GeometryInstance,
   ImageryLayer,
   Ion,
+  LabelCollection,
   LabelStyle,
   Math as CesiumMath,
   NearFarScalar,
   OpenStreetMapImageryProvider,
+  PerInstanceColorAppearance,
   PointPrimitiveCollection,
+  Primitive,
+  PrimitiveCollection,
   Rectangle,
+  RectangleGeometry,
+  RectangleOutlineGeometry,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Terrain,
@@ -24,11 +32,11 @@ import {
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
-import type { AlertRule, FireDetection, FireEvent } from "./api";
+import type { AlertRule, CompactDetections, FireEvent } from "./api";
 
 export type BaseLayerId = "esri" | "osm" | "gibs";
 export type PickResult =
-  | { kind: "detection"; detection: FireDetection }
+  | { kind: "detection"; id: string }
   | { kind: "event"; eventId: string }
   | { kind: "point"; lat: number; lon: number };
 
@@ -38,30 +46,74 @@ const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
 const MARKER_HEIGHT_M = 1000;
 const NO_DEPTH_TEST_WITHIN_M = 1_500_000;
 const GIBS_CREDIT = new Credit("Imagery: NASA EOSDIS GIBS");
+const ZONE_COLOR = Color.fromCssColorString("#38bdf8");
+const ACTIVE_COLOR = Color.fromCssColorString("#ff5a1f");
+const INACTIVE_COLOR = Color.fromCssColorString("#9a7b5c");
 
 function yesterday(): string {
   return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 }
 
-/** FRP (MW) -> colour ramp yellow -> orange -> red -> magenta (log scale). */
-export function frpColor(frp: number | null): Color {
-  const t = Math.min(1, Math.log10(Math.max(1, frp ?? 1)) / 3); // 1 MW .. 1000 MW
-  const stops = [Color.fromCssColorString("#ffe14d"), Color.fromCssColorString("#ff8a1f"),
-    Color.fromCssColorString("#e8261b"), Color.fromCssColorString("#b0127a")];
-  const x = t * (stops.length - 1);
-  const i = Math.min(stops.length - 2, Math.floor(x));
-  return Color.lerp(stops[i], stops[i + 1], x - i, new Color());
+// FRP (MW) -> colour ramp yellow -> orange -> red -> magenta on a log scale (1..1000 MW).
+// Precomputed once: building 50k points must not allocate 50k Color objects.
+const RAMP_STEPS = 48;
+const RAMP_STOPS = ["#ffe14d", "#ff8a1f", "#e8261b", "#b0127a"].map((c) => Color.fromCssColorString(c));
+const RAMP: { solid: Color; faint: Color }[] = Array.from({ length: RAMP_STEPS }, (_, k) => {
+  const x = (k / (RAMP_STEPS - 1)) * (RAMP_STOPS.length - 1);
+  const i = Math.min(RAMP_STOPS.length - 2, Math.floor(x));
+  const c = Color.lerp(RAMP_STOPS[i], RAMP_STOPS[i + 1], x - i, new Color());
+  return { solid: c.withAlpha(0.95), faint: c.withAlpha(0.5) };
+});
+function rampIndex(frp: number | null): number {
+  const t = Math.min(1, Math.log10(Math.max(1, frp ?? 1)) / 3);
+  return Math.round(t * (RAMP_STEPS - 1));
+}
+const VIIRS_OUTLINE = Color.WHITE.withAlpha(0.7);
+const MODIS_OUTLINE = Color.BLACK.withAlpha(0.8);
+const POINT_SCALE = new NearFarScalar(5e4, 1.8, 8e6, 0.7);
+const LABEL_RANGE = new DistanceDisplayCondition(0, 2_500_000);
+
+/** Batch many shapes into one draw call; geometry is built synchronously so it is
+ * ready on the next requested frame (we render on demand, not every frame). */
+function batch(instances: GeometryInstance[], outline: boolean, pickable = true): Primitive | null {
+  if (!instances.length) return null;
+  return new Primitive({
+    geometryInstances: instances,
+    appearance: new PerInstanceColorAppearance({ flat: true, translucent: !outline }),
+    asynchronous: false,
+    // Decorative shapes (zones, radius ring) must not swallow clicks on the fires inside them.
+    allowPicking: pickable,
+  });
+}
+
+function instance(geometry: ConstructorParameters<typeof GeometryInstance>[0]["geometry"], color: Color, id?: string): GeometryInstance {
+  return new GeometryInstance({ geometry, id, attributes: { color: ColorGeometryInstanceAttribute.fromColor(color) } });
+}
+
+/** A named group of primitives that can be replaced and toggled as one layer. */
+class Layer {
+  readonly group: PrimitiveCollection;
+  constructor(parent: PrimitiveCollection) {
+    this.group = parent.add(new PrimitiveCollection());
+  }
+  replace(...items: (Primitive | LabelCollection | PointPrimitiveCollection | null)[]): void {
+    this.group.removeAll(); // destroys previous primitives and frees GPU memory
+    for (const item of items) if (item) this.group.add(item);
+  }
+  set show(v: boolean) {
+    this.group.show = v;
+  }
 }
 
 export class Globe {
   readonly viewer: Viewer;
   private readonly baseLayers: Record<BaseLayerId, ImageryLayer>;
   private readonly ndviLayer: ImageryLayer;
-  private readonly points: PointPrimitiveCollection;
-  private readonly events = new CustomDataSource("events");
-  private readonly zones = new CustomDataSource("alert-zones");
-  private readonly pinned = new CustomDataSource("pinned");
-  private detectionById = new Map<string, FireDetection>();
+  private readonly detections: Layer;
+  private readonly events: Layer;
+  private readonly zones: Layer;
+  private readonly pinned: Layer;
+  private detectionIds: string[] = [];
 
   constructor(container: HTMLElement, onPick: (r: PickResult) => void) {
     const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
@@ -78,8 +130,19 @@ export class Globe {
       infoBox: false,
       selectionIndicator: false,
       sceneModePicker: true,
+      // Render only when something changes (camera, tiles, data) instead of 60 fps forever.
+      requestRenderMode: true,
+      maximumRenderTimeChange: Infinity,
+      // 4x MSAA is expensive on integrated GPUs; FXAA below is nearly free.
+      msaaSamples: 1,
       ...(ionToken ? { terrain: Terrain.fromWorldTerrain() } : {}),
     });
+    const scene = this.viewer.scene;
+    scene.postProcessStages.fxaa.enabled = true;
+    scene.globe.enableLighting = false;
+    scene.globe.baseColor = Color.fromCssColorString("#0b1a2b"); // shown while/if tiles fail
+    scene.globe.tileCacheSize = 300; // revisiting an area doesn't refetch tiles
+
     const layers = this.viewer.imageryLayers;
     this.baseLayers = {
       esri: layers.addImageryProvider(
@@ -101,34 +164,46 @@ export class Globe {
     );
     this.ndviLayer.alpha = 0.6;
     this.ndviLayer.show = false;
-    this.setBaseLayer("esri");
+    this.setBaseLayer("esri"); // hidden layers request no tiles
 
-    this.points = this.viewer.scene.primitives.add(new PointPrimitiveCollection());
-    void this.viewer.dataSources.add(this.zones);
-    void this.viewer.dataSources.add(this.events);
-    void this.viewer.dataSources.add(this.pinned);
+    // Draw order: zones under events under detections under the pin.
+    this.zones = new Layer(scene.primitives);
+    this.events = new Layer(scene.primitives);
+    this.detections = new Layer(scene.primitives);
+    this.pinned = new Layer(scene.primitives);
 
-    this.viewer.scene.globe.enableLighting = false;
-    this.viewer.scene.globe.baseColor = Color.fromCssColorString("#0b1a2b"); // shown while/if tiles fail
     this.viewer.camera.setView({ destination: Cartesian3.fromDegrees(-62, -25, 9_000_000) });
 
-    const handler = new ScreenSpaceEventHandler(this.viewer.scene.canvas);
+    const handler = new ScreenSpaceEventHandler(scene.canvas);
     handler.setInputAction((e: { position: Cartesian2 }) => {
-      const picked = this.viewer.scene.pick(e.position);
-      if (picked?.id instanceof Entity && picked.id.id.startsWith("evt_")) {
-        onPick({ kind: "event", eventId: picked.id.id });
+      const picked = scene.pick(e.position);
+      const id: unknown = picked?.id;
+      if (typeof id === "string" && id.startsWith("evt_")) {
+        onPick({ kind: "event", eventId: id });
         return;
       }
-      if (typeof picked?.id === "string" && this.detectionById.has(picked.id)) {
-        onPick({ kind: "detection", detection: this.detectionById.get(picked.id)! });
+      if (typeof id === "number" && this.detectionIds[id] !== undefined) {
+        onPick({ kind: "detection", id: this.detectionIds[id] });
         return;
       }
-      const cart = this.viewer.camera.pickEllipsoid(e.position, this.viewer.scene.globe.ellipsoid);
+      const cart = this.viewer.camera.pickEllipsoid(e.position, scene.globe.ellipsoid);
       if (cart) {
         const c = Cartographic.fromCartesian(cart);
         onPick({ kind: "point", lat: CesiumMath.toDegrees(c.latitude), lon: CesiumMath.toDegrees(c.longitude) });
       }
     }, ScreenSpaceEventType.LEFT_CLICK);
+  }
+
+  /** In request-render mode, data and visibility changes must ask for a frame. One extra
+   * frame lets freshly built primitives and pick buffers settle. */
+  private redraw(): void {
+    const scene = this.viewer.scene;
+    const once = () => {
+      scene.postRender.removeEventListener(once);
+      scene.requestRender();
+    };
+    scene.postRender.addEventListener(once);
+    scene.requestRender();
   }
 
   private gibsTrueColor(date: string) {
@@ -141,135 +216,139 @@ export class Globe {
 
   setBaseLayer(id: BaseLayerId): void {
     for (const [k, layer] of Object.entries(this.baseLayers)) layer.show = k === id;
+    this.redraw();
   }
 
   /** Swap the NASA GIBS daily true-colour mosaic to another date (YYYY-MM-DD). */
   setGibsDate(date: string): void {
     const layers = this.viewer.imageryLayers;
     const old = this.baseLayers.gibs;
-    const index = layers.indexOf(old);
-    const fresh = layers.addImageryProvider(this.gibsTrueColor(date), index);
+    const fresh = layers.addImageryProvider(this.gibsTrueColor(date), layers.indexOf(old));
     fresh.show = old.show;
     layers.remove(old, true);
     this.baseLayers.gibs = fresh;
+    this.redraw();
   }
 
   setNdviVisible(v: boolean): void {
     this.ndviLayer.show = v;
+    this.redraw();
   }
 
   setDetectionsVisible(v: boolean): void {
-    this.points.show = v;
+    this.detections.show = v;
+    this.redraw();
   }
 
   setEventsVisible(v: boolean): void {
     this.events.show = v;
+    this.redraw();
   }
 
   setZonesVisible(v: boolean): void {
     this.zones.show = v;
+    this.redraw();
   }
 
-  showDetections(dets: FireDetection[]): void {
-    this.points.removeAll();
-    this.detectionById = new Map(dets.map((d) => [d.id, d]));
-    for (const d of dets) {
-      const viirs = d.instrument === "VIIRS";
-      this.points.add({
-        id: d.id,
-        position: Cartesian3.fromDegrees(d.longitude, d.latitude, MARKER_HEIGHT_M),
-        color: frpColor(d.frp_mw).withAlpha(d.confidence_level === "low" ? 0.5 : 0.95),
+  showDetections(d: CompactDetections): void {
+    const points = new PointPrimitiveCollection();
+    for (let i = 0; i < d.count; i++) {
+      const viirs = d.viirs[i] === 1;
+      const ramp = RAMP[rampIndex(d.frp[i])];
+      points.add({
+        id: i, // index into the columnar arrays; full record is fetched on click
+        position: Cartesian3.fromDegrees(d.lon[i], d.lat[i], MARKER_HEIGHT_M),
+        color: d.conf[i] === 0 ? ramp.faint : ramp.solid,
         pixelSize: viirs ? 5 : 8,
         // Outline encodes the sensor: white = VIIRS (375 m), dark = MODIS (1 km)
-        outlineColor: viirs ? Color.WHITE.withAlpha(0.7) : Color.BLACK.withAlpha(0.8),
+        outlineColor: viirs ? VIIRS_OUTLINE : MODIS_OUTLINE,
         outlineWidth: 1,
-        scaleByDistance: new NearFarScalar(5e4, 1.8, 8e6, 0.7),
+        scaleByDistance: POINT_SCALE,
         disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
       });
     }
+    this.detectionIds = d.id;
+    this.detections.replace(points);
+    this.redraw();
   }
 
   showEvents(events: FireEvent[]): void {
-    this.events.entities.removeAll();
+    const fills: GeometryInstance[] = [];
+    const lines: GeometryInstance[] = [];
+    const labels = new LabelCollection();
     for (const ev of events) {
       const active = ev.status === "active";
-      const radiusM = Math.max(400, Math.sqrt(ev.area_km2 / Math.PI) * 1000);
-      const color = active ? Color.fromCssColorString("#ff5a1f") : Color.fromCssColorString("#9a7b5c");
-      this.events.entities.add({
-        id: ev.id,
-        position: Cartesian3.fromDegrees(ev.longitude, ev.latitude),
-        ellipse: {
-          semiMajorAxis: radiusM,
-          semiMinorAxis: radiusM,
-          height: 0,
-          material: color.withAlpha(active ? 0.28 : 0.18),
-          outline: true,
-          outlineColor: color,
-        },
-        label:
-          ev.area_km2 >= 1
-            ? {
-                text: `${ev.area_km2.toFixed(1)} km²`,
-                font: "12px Inter, system-ui, sans-serif",
-                fillColor: Color.WHITE,
-                outlineColor: Color.BLACK,
-                outlineWidth: 3,
-                style: LabelStyle.FILL_AND_OUTLINE,
-                verticalOrigin: VerticalOrigin.BOTTOM,
-                pixelOffset: new Cartesian2(0, -10),
-                distanceDisplayCondition: new DistanceDisplayCondition(0, 2_500_000),
-                disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
-              }
-            : undefined,
-      });
+      const color = active ? ACTIVE_COLOR : INACTIVE_COLOR;
+      const center = Cartesian3.fromDegrees(ev.longitude, ev.latitude);
+      const radius = Math.max(400, Math.sqrt(ev.area_km2 / Math.PI) * 1000);
+      fills.push(instance(new CircleGeometry({ center, radius, height: 0 }), color.withAlpha(active ? 0.28 : 0.18), ev.id));
+      lines.push(instance(new CircleOutlineGeometry({ center, radius, height: 0 }), color, ev.id));
+      if (ev.area_km2 >= 1) {
+        labels.add({
+          position: Cartesian3.fromDegrees(ev.longitude, ev.latitude, MARKER_HEIGHT_M),
+          text: `${ev.area_km2.toFixed(1)} km²`,
+          font: "12px Inter, system-ui, sans-serif",
+          fillColor: Color.WHITE,
+          outlineColor: Color.BLACK,
+          outlineWidth: 3,
+          style: LabelStyle.FILL_AND_OUTLINE,
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          pixelOffset: new Cartesian2(0, -10),
+          distanceDisplayCondition: LABEL_RANGE,
+          disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
+        });
+      }
     }
+    this.events.replace(batch(fills, false), batch(lines, true), labels);
+    this.redraw();
   }
 
   showAlertZones(rules: AlertRule[]): void {
-    this.zones.entities.removeAll();
-    const cyan = Color.fromCssColorString("#38bdf8");
+    const fills: GeometryInstance[] = [];
+    const lines: GeometryInstance[] = [];
+    const faint = ZONE_COLOR.withAlpha(0.06);
     for (const r of rules) {
       if (r.west != null && r.south != null && r.east != null && r.north != null) {
-        this.zones.entities.add({
-          rectangle: {
-            coordinates: Rectangle.fromDegrees(r.west, r.south, r.east, r.north),
-            material: cyan.withAlpha(0.06),
-            outline: true,
-            outlineColor: cyan,
-            height: 0,
-          },
-        });
+        const rectangle = Rectangle.fromDegrees(r.west, r.south, r.east, r.north);
+        fills.push(instance(new RectangleGeometry({ rectangle, height: 0 }), faint));
+        lines.push(instance(new RectangleOutlineGeometry({ rectangle, height: 0 }), ZONE_COLOR));
       }
       if (r.center_lat != null && r.center_lon != null && r.radius_km != null) {
-        this.zones.entities.add({
-          position: Cartesian3.fromDegrees(r.center_lon, r.center_lat),
-          ellipse: {
-            semiMajorAxis: r.radius_km * 1000,
-            semiMinorAxis: r.radius_km * 1000,
-            material: cyan.withAlpha(0.06),
-            outline: true,
-            outlineColor: cyan,
-            height: 0,
-          },
-        });
+        const center = Cartesian3.fromDegrees(r.center_lon, r.center_lat);
+        const radius = r.radius_km * 1000;
+        fills.push(instance(new CircleGeometry({ center, radius, height: 0 }), faint));
+        lines.push(instance(new CircleOutlineGeometry({ center, radius, height: 0 }), ZONE_COLOR));
       }
     }
+    this.zones.replace(batch(fills, false, false), batch(lines, true, false));
+    this.redraw();
   }
 
   /** Marker + optional radius ring for the point/radius filter. */
   pin(lat: number | null, lon: number | null, radiusKm?: number): void {
-    this.pinned.entities.removeAll();
-    if (lat == null || lon == null) return;
-    this.pinned.entities.add({
-      position: Cartesian3.fromDegrees(lon, lat),
-      point: { pixelSize: 9, color: Color.fromCssColorString("#38bdf8"), outlineColor: Color.WHITE, outlineWidth: 2,
-        disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M },
-      ellipse: radiusKm
-        ? { semiMajorAxis: radiusKm * 1000, semiMinorAxis: radiusKm * 1000, height: 0,
-            material: Color.fromCssColorString("#38bdf8").withAlpha(0.08), outline: true,
-            outlineColor: Color.fromCssColorString("#38bdf8") }
-        : undefined,
+    if (lat == null || lon == null) {
+      this.pinned.replace();
+      this.redraw();
+      return;
+    }
+    const marker = new PointPrimitiveCollection();
+    marker.add({
+      position: Cartesian3.fromDegrees(lon, lat, MARKER_HEIGHT_M),
+      pixelSize: 9,
+      color: ZONE_COLOR,
+      outlineColor: Color.WHITE,
+      outlineWidth: 2,
+      disableDepthTestDistance: NO_DEPTH_TEST_WITHIN_M,
     });
+    const center = Cartesian3.fromDegrees(lon, lat);
+    const ring = radiusKm
+      ? [
+          batch([instance(new CircleGeometry({ center, radius: radiusKm * 1000, height: 0 }), ZONE_COLOR.withAlpha(0.08))], false, false),
+          batch([instance(new CircleOutlineGeometry({ center, radius: radiusKm * 1000, height: 0 }), ZONE_COLOR)], true, false),
+        ]
+      : [];
+    this.pinned.replace(...ring, marker);
+    this.redraw();
   }
 
   /** Current camera footprint as west,south,east,north (degrees), or null when looking at space. */

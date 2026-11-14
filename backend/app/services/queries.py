@@ -2,7 +2,7 @@
 
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
@@ -77,8 +77,7 @@ class DetectionFilter:
     limit: int = 5000
 
 
-def query_detections(session: Session, f: DetectionFilter) -> list[FireDetection]:
-    stmt = select(DetectionRow)
+def _filter_detections(stmt: Select, f: DetectionFilter) -> Select:
     if f.start:
         stmt = stmt.where(DetectionRow.acquired_at >= to_naive_utc(f.start))
     if f.end:
@@ -101,9 +100,15 @@ def query_detections(session: Session, f: DetectionFilter) -> list[FireDetection
     if f.event_id:
         stmt = stmt.where(DetectionRow.event_id == f.event_id)
     stmt = stmt.order_by(DetectionRow.acquired_at.desc())
-    radius = f.area is not None and f.area.has_radius
-    if not radius:
+    # With a radius the bbox pre-filter over-selects, so the limit is applied after the exact check.
+    if not (f.area is not None and f.area.has_radius):
         stmt = stmt.limit(f.limit)
+    return stmt
+
+
+def query_detections(session: Session, f: DetectionFilter) -> list[FireDetection]:
+    stmt = _filter_detections(select(DetectionRow), f)
+    radius = f.area is not None and f.area.has_radius
     out = []
     for row in session.scalars(stmt):
         if radius and not f.area.contains(row.latitude, row.longitude):
@@ -112,6 +117,42 @@ def query_detections(session: Session, f: DetectionFilter) -> list[FireDetection
         if len(out) >= f.limit:
             break
     return out
+
+
+CONFIDENCE_CODE = {"low": 0, "nominal": 1, "high": 2}
+
+
+def query_detections_compact(session: Session, f: DetectionFilter) -> dict:
+    """Columnar, render-only view of detections for the globe.
+
+    ~10x smaller than the full model and skips ORM/pydantic per row. Full records are
+    fetched one at a time (GET /api/detections/{id}) when the user clicks a point.
+    """
+    cols = (
+        DetectionRow.id,
+        DetectionRow.latitude,
+        DetectionRow.longitude,
+        DetectionRow.frp_mw,
+        DetectionRow.confidence_level,
+        DetectionRow.instrument,
+        DetectionRow.acquired_at,
+    )
+    stmt = _filter_detections(select(*cols), f)
+    radius = f.area is not None and f.area.has_radius
+    ids, lat, lon, frp, conf, viirs, t = [], [], [], [], [], [], []
+    for r in session.execute(stmt):
+        if radius and not f.area.contains(r.latitude, r.longitude):
+            continue
+        ids.append(r.id)
+        lat.append(round(r.latitude, 4))
+        lon.append(round(r.longitude, 4))
+        frp.append(round(r.frp_mw, 1) if r.frp_mw is not None else None)
+        conf.append(CONFIDENCE_CODE.get(r.confidence_level, 1))
+        viirs.append(1 if r.instrument == "VIIRS" else 0)
+        t.append(int(r.acquired_at.replace(tzinfo=UTC).timestamp()))
+        if len(ids) >= f.limit:
+            break
+    return {"count": len(ids), "id": ids, "lat": lat, "lon": lon, "frp": frp, "conf": conf, "viirs": viirs, "t": t}
 
 
 @dataclass

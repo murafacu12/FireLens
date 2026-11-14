@@ -50,6 +50,8 @@ Interactive docs at http://localhost:8000/docs.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/detections` | Harmonized pixels. Filters: `start`, `end`, `bbox=w,s,e,n`, `lat`+`lon`+`radius_km`, `instrument`, `satellite`, `min_confidence`, `min_frp`, `max_frp`, `daynight`, `event_id` |
+| `GET /api/detections/compact` | Same filters, columnar arrays (`id, lat, lon, frp, conf, viirs, t`) for map rendering. About 10x smaller, gzipped |
+| `GET /api/detections/{id}` | One full detection (loaded when a point is clicked) |
 | `GET /api/events` | Fire events. Filters: time overlap, area, `min_area`/`max_area`, `min_frp`, `min_detections`, `status`, `instrument`, `sort=recent\|area\|frp` |
 | `GET /api/events/{id}` | Event with all its detections |
 | `GET /api/calendar` | Daily detections / new events / FRP (`start`, `end`, optional area) |

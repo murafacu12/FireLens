@@ -85,3 +85,20 @@ def test_past_fire_is_inactive_and_active_fire_found(client):
 
 def test_ndvi_not_configured(client):
     assert client.get("/api/ndvi", params={"lat": 0, "lon": 0}).status_code == 501
+
+
+def test_compact_detections_match_full_and_detail_lookup(client):
+    params = {"instrument": "VIIRS", "min_confidence": "high", "limit": 300}
+    full = client.get("/api/detections", params=params).json()
+    compact = client.get("/api/detections/compact", params=params).json()
+    assert compact["count"] == len(full) == len(compact["lat"]) == len(compact["t"])
+    assert compact["id"] == [d["id"] for d in full]
+    assert set(compact["viirs"]) == {1} and set(compact["conf"]) == {2}
+    one = client.get(f"/api/detections/{compact['id'][0]}").json()
+    assert one["id"] == compact["id"][0] and abs(one["latitude"] - compact["lat"][0]) < 1e-4
+    assert client.get("/api/detections/nope").status_code == 404
+
+
+def test_responses_are_gzipped(client):
+    resp = client.get("/api/detections/compact", params={"limit": 5000}, headers={"Accept-Encoding": "gzip"})
+    assert resp.headers.get("content-encoding") == "gzip"

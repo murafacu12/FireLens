@@ -89,9 +89,7 @@ async def ingest(req: IngestRequest, request: Request, settings: SettingsDep, ht
     return await run_ingest(request.app.state.session_factory, settings, http, req)
 
 
-@router.get("/detections", response_model=list[FireDetection])
-def list_detections(
-    session: SessionDep,
+def detection_filter(
     area: AreaDep,
     start: datetime | None = None,
     end: datetime | None = None,
@@ -102,14 +100,35 @@ def list_detections(
     max_frp: float | None = None,
     daynight: Literal["D", "N"] | None = None,
     event_id: str | None = None,
-    limit: Annotated[int, Query(ge=1, le=50000)] = 5000,
-):
-    f = queries.DetectionFilter(
+    limit: Annotated[int, Query(ge=1, le=100000)] = 5000,
+) -> queries.DetectionFilter:
+    return queries.DetectionFilter(
         start=start, end=end, area=area, instruments=instrument, satellites=satellite,
         min_confidence=min_confidence, min_frp=min_frp, max_frp=max_frp, daynight=daynight,
         event_id=event_id, limit=limit,
     )
+
+
+DetectionFilterDep = Annotated[queries.DetectionFilter, Depends(detection_filter)]
+
+
+@router.get("/detections", response_model=list[FireDetection])
+def list_detections(session: SessionDep, f: DetectionFilterDep):
     return queries.query_detections(session, f)
+
+
+@router.get("/detections/compact")
+def list_detections_compact(session: SessionDep, f: DetectionFilterDep):
+    """Columnar arrays (id, lat, lon, frp, conf 0-2, viirs 0/1, t epoch s) for map rendering."""
+    return queries.query_detections_compact(session, f)
+
+
+@router.get("/detections/{detection_id}", response_model=FireDetection)
+def get_detection(detection_id: str, session: SessionDep):
+    row = session.get(DetectionRow, detection_id)
+    if not row:
+        raise HTTPException(404, "detection not found")
+    return FireDetection.model_validate(row)
 
 
 @router.get("/events", response_model=list[FireEvent])

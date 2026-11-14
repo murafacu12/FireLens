@@ -21,8 +21,10 @@
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
 button, input, select { font: inherit; color: inherit; }
 
-#app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; overflow: hidden; }
-#globe { position: relative; min-width: 0; }
+/* Rows/columns are pinned to the viewport: an `auto` row would size itself to Cesium's
+   canvas, which sizes itself to the row, and the globe grows (and re-renders) forever. */
+#app { display: grid; grid-template-columns: 360px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100vh; overflow: hidden; }
+#globe { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 #globe.crosshair canvas { cursor: crosshair; }
 
 /* ------------------------------------------------------------- sidebar */
@@ -140,7 +142,7 @@ table.risk td { padding: 4px; border-bottom: 1px solid var(--line); }
 .cesium-viewer-toolbar { top: 12px; right: 404px; }
 
 @media (max-width: 900px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: 55vh 45vh; }
+  #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 55vh 45vh; }
   #globe { grid-row: 1; }
   #sidebar { grid-row: 2; border-right: none; border-top: 1px solid var(--line); }
   /* bottom sheet over the sidebar, so the globe stays visible */
