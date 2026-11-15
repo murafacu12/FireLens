@@ -90,7 +90,50 @@ the button is hidden. The code and the backtest are kept.
 - **Fuel does not discriminate.** 97.7% of the new detections are on burnable land, so the land
   cover hardly narrows down where the fire goes.
 
-**What could work instead** (to be tested the same way):
+## Second attempt: a model learned from FireLens's history (15 Nov 2026)
+
+`ml/spread_cases.py`, `ml/fetch_spread_weather.py` and `ml/train_spread.py`.
+
+**Data**
+- 4,064 fire-days from 2,773 fires.
+- Hourly weather from Meteomatics (wind, gusts, humidity, rain, temperature), cached in
+  `data/training/spread/`.
+
+**Model**
+- Gradient boosting on per-cell features:
+  - distance to the front, and to the ground the fire already burned;
+  - alignment with the wind, with the fire's own movement over the previous day, and with the
+    uphill direction;
+  - land cover, slope, other fires in the last 30 days;
+  - the day's weather and the Fosberg index.
+- Strict time split: trained on fire-days before 13 Nov (1,692), tested on 13–14 Nov (2,372
+  fire-days, 1,726 fires).
+
+**Fair baseline: the ring.** The plain circle wastes its smallest areas on the burned ground
+itself, where a target can never be (targets are new ground by definition). So the comparison is
+against a ring: distance from the front, with the burned ground excluded.
+
+| Zone | Learned | Circle | Ring | Learned − ring (95% CI, bootstrap over fires) |
+|---|---|---|---|---|
+| 1 km² | 8.5% | 0.0% | 8.6% | −0.1 pts (−0.7 … +0.5) |
+| 2 km² | 15.9% | 0.7% | 17.0% | −1.2 pts (−1.8 … −0.5) |
+| 5 km² | 34.0% | 12.3% | 35.4% | −1.5 pts (−2.1 … −0.9) |
+| 10 km² | 52.2% | 33.7% | 53.0% | −0.8 pts (−1.5 … −0.2) |
+| 20 km² | 70.7% | 60.8% | 69.7% | +1.0 pts (+0.4 … +1.6) |
+| 40 km² | 85.1% | 80.1% | 81.9% | +3.2 pts (+2.7 … +3.7) |
+
+**Verdict: no meaningful gain over the ring.** Slightly worse for small zones, slightly better
+for large ones.
+
+What decides where a fire shows up next day is how far it is from the current front, outside the
+ground already burned. With better weather (Meteomatics), the fire's own movement and land use,
+the wind and fuel signals still add almost nothing at this scale.
+
+The ring itself is a useful, honest product:
+- it catches 35% of the next day's new fire in 5 km², 53% in 10 km² and 82% in 40 km²;
+- those are measured hit rates that can be shown next to it.
+
+**What could still be tried** (each tested the same way):
 - **A data-driven model:** probability of a new detection per cell, learned from FireLens's own
   history. Inputs would be distance to the front, alignment with the wind, land cover, slope and
   the fire's recent growth. It would be validated on held-out fires against the circle.
