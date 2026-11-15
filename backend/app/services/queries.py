@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import Integer, Select, case, cast, func, or_, select
+from sqlalchemy import DateTime, Integer, Select, case, cast, func, literal_column, or_, select
 from sqlalchemy.orm import Session
 
 from app.ingest.clustering import haversine_km
@@ -328,12 +328,21 @@ def calendar(session: Session, start: date, end: date, area: Area | None = None)
     )
     if area:
         day = func.date(DetectionRow.acquired_at)
+        # A small area is found by place, not by time: left to itself SQLite reads every detection
+        # of the period worldwide through the time index (2.4 s instead of ~0.1 s for 26 weeks of a
+        # province). A unary `+` hides the time column's index.
+        box = area.bbox or (radius_to_bbox(area.lat, area.lon, area.radius_km) if area.has_radius else None)
+        small = box is not None and not _is_whole_world(box) and ((box[2] - box[0]) % 360 or 360) * (box[3] - box[1]) <= 2500
+        det_t = literal_column("+detections.acquired_at", DateTime) if small else DetectionRow.acquired_at
+        if small:
+            ev_stmt = select(ev_day.label("day"), func.count().label("n")).where(
+                literal_column("+fire_events.start_at", DateTime) >= t0, literal_column("+fire_events.start_at", DateTime) < t1)
         det_stmt = select(
             day.label("day"),
             func.count().label("n"),
             func.coalesce(func.sum(DetectionRow.frp_mw), 0).label("total"),
             func.coalesce(func.max(DetectionRow.frp_mw), 0).label("peak"),
-        ).where(DetectionRow.acquired_at >= t0, DetectionRow.acquired_at < t1, DetectionRow.static_kind.is_(None))
+        ).where(det_t >= t0, det_t < t1, DetectionRow.static_kind.is_(None))
         det_stmt = area.apply(det_stmt, DetectionRow.latitude, DetectionRow.longitude)
         ev_stmt = area.apply(ev_stmt, EventRow.latitude, EventRow.longitude)
         dets = {str(r.day): r for r in session.execute(det_stmt.group_by(day))}
@@ -342,7 +351,9 @@ def calendar(session: Session, start: date, end: date, area: Area | None = None)
         # instead of millions of detections).
         h0 = int(t0.replace(tzinfo=UTC).timestamp() // 3600)
         h1 = int(t1.replace(tzinfo=UTC).timestamp() // 3600)
-        dnum = (FireCellRow.hour / 24).label("dnum")
+        # `//`: integer division. SQLAlchemy 2 renders `/` as true division, which made every hour
+        # its own group and left each day with the count of a single hour.
+        dnum = (FireCellRow.hour // 24).label("dnum")
         stmt = (
             select(
                 dnum,

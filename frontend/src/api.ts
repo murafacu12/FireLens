@@ -321,9 +321,18 @@ export interface SensorComparison {
   };
 }
 
+/** Outline of where active fire was detected (sensor pixels, small gaps closed, holes filled). */
+export interface EventPerimeter {
+  rings: [number, number][][]; // outer rings as [lon, lat], closed
+  area_km2: number; // area inside the outline
+  basis: string; // viirs_375m | modis_1km
+  gap_km: number; // widest gap between detections that was closed
+}
+
 export interface FireEventDetail extends FireEvent {
   detections: FireDetection[];
   resolved_from: string | null; // the id asked for, when it was merged/renamed into this event
+  perimeter: EventPerimeter | null; // null with fewer than 3 pixels
 }
 
 /** Whole-fire FRP seen by one satellite overpass. */

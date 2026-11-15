@@ -50,6 +50,10 @@ def test_calendar(client):
     days = client.get("/api/calendar").json()
     assert len(days) == 30
     assert sum(d["detections"] for d in days) > 0
+    # worldwide days come from the map pyramid; a whole-world box counts the raw detections:
+    # every day must agree (a true division once left each day with the count of a single hour)
+    exact = client.get("/api/calendar", params={"bbox": "-180,-90,180,90"}).json()
+    assert [d["detections"] for d in days] == [d["detections"] for d in exact]
 
 
 def test_alert_rule_fires_on_reingest(client):

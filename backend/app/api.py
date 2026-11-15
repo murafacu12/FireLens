@@ -35,7 +35,7 @@ from app.schemas import (
     IngestReport,
     IngestRequest,
 )
-from app.services import analysis, baseline, cells, fire_report, landscape, queries, sensor_compare, sentinel
+from app.services import analysis, baseline, cells, fire_report, landscape, perimeter, queries, sensor_compare, sentinel
 from app.services import spread as spread_model
 from app.services.ndvi import CopernicusNdvi, NdviResult
 from app.services.alerts import deliver_webhooks, evaluate_rules
@@ -223,7 +223,9 @@ def get_event(event_id: str, session: SessionDep):
     row = session.get(EventRow, cid)
     dets = queries.query_detections(session, queries.DetectionFilter(event_id=cid, limit=50000))
     data = FireEvent.model_validate(row).model_dump(exclude={"detected_footprint_km2", "burned_area_km2"})
-    return FireEventDetail(**data, detections=dets, resolved_from=event_id if cid != event_id else None)
+    outline = perimeter.event_perimeter(dets, row.latitude, row.longitude)
+    return FireEventDetail(**data, detections=dets, resolved_from=event_id if cid != event_id else None,
+                           perimeter=vars(outline) if outline else None)
 
 
 @router.get("/events/{event_id}/timeline", response_model=list[EventPass])

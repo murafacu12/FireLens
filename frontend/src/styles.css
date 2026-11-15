@@ -134,6 +134,7 @@ h2 { font-size: 18px; margin: 0 0 8px; font-weight: 700; }
 h3 { font-size: 12px; margin: 22px 0 10px; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 h3::before { content: ""; width: 3px; height: 12px; border-radius: 2px; background: var(--accent); flex: none; }
 #tab-analysis h3 small { text-transform: none; letter-spacing: 0; font-weight: 500; }
+h3:empty { display: none; }
 
 /* ------------------------------------------------------------- lists */
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -194,6 +195,39 @@ details.history summary { cursor: pointer; color: var(--muted); }
 .calendar .day.today { outline: 2px solid var(--text); }
 .calendar .day small { align-self: flex-end; color: #fff; font-size: 10.5px; background: rgba(0, 0, 0, 0.55); border-radius: 4px; padding: 0 4px; }
 
+/* contribution-style heatmap: five orange levels, empty days dark; "no data" days hatched */
+.calendar-heatmap { margin-top: 12px; }
+.heatmap { width: 100%; display: block; touch-action: none; user-select: none; }
+.cal-scope { margin: 12px 0 4px; }
+label.hide-low { flex-direction: row; align-items: center; gap: 8px; margin: 10px 0 0; font-size: 14px; color: var(--text); cursor: pointer; }
+label.hide-low .help { margin-left: 2px; }
+.hide-low input { accent-color: var(--accent); width: 16px; height: 16px; }
+.perimeter-hint { display: flex; align-items: center; gap: 8px; }
+.perimeter-swatch { flex: none; width: 14px; height: 14px; border: 2px solid #ff8a42; background: rgba(255, 138, 66, 0.18); border-radius: 3px; }
+.cal-area { margin: 4px 0 0; }
+.cal-sel { margin-top: 12px; border-color: var(--accent); }
+.cal-sel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.cal-sel-head p { margin: 2px 0 0; color: var(--muted); }
+.cal-sel .actions { margin-top: 8px; }
+.cal-sel .s-tile .v small { font-size: 0.6em; margin-left: 2px; color: var(--muted); }
+.heatmap .hm-label { fill: var(--muted); font-size: 8.5px; font-weight: 600; }
+.hm-day { fill: var(--panel-3); stroke: rgba(255, 255, 255, 0.05); stroke-width: 0.5; cursor: pointer; }
+.hm-day.l1 { fill: #4a2410; }
+.hm-day.l2 { fill: #8a3a10; }
+.hm-day.l3 { fill: #d85a14; }
+.hm-day.l4 { fill: #ff8a42; }
+.hm-day.nodata { fill: #141414; stroke: #2a2a2a; stroke-dasharray: 1.5 1.5; }
+.hm-day.today { stroke: var(--text); stroke-width: 1; stroke-dasharray: none; }
+.hm-day.sel { stroke: var(--accent-hi); stroke-width: 1.6; stroke-dasharray: none; }
+.heatmap rect.hm-day:hover { stroke: var(--text); stroke-width: 1; }
+.hm-legend { display: flex; align-items: center; justify-content: flex-end; gap: 4px; font-size: 11.5px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.hm-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; }
+.hm-legend i.hm-day { background: var(--panel-3); border: 1px solid rgba(255, 255, 255, 0.05); }
+.hm-legend i.l1 { background: #4a2410; } .hm-legend i.l2 { background: #8a3a10; }
+.hm-legend i.l3 { background: #d85a14; } .hm-legend i.l4 { background: #ff8a42; }
+.hm-legend i.nodata { background: #141414; border: 1px dashed #3a3a3a; }
+.hm-legend .hm-nodata { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px; }
+#cal-summary .s-tile .v { font-size: 21px; }
 .segmented { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 3px; margin-bottom: 12px; }
 .segmented button { flex: 1; background: none; border: none; color: var(--muted); font-weight: 600; padding: 7px; border-radius: var(--radius-sm); }
 .segmented button.active { background: var(--panel-3); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
@@ -468,4 +502,15 @@ label > span { display: inline-flex; align-items: center; }
 @media (max-width: 760px) {
   .map-legend { width: 210px; } /* its bottom offset sits above the phone sheet (900px rule) */
   .s-tile .v { font-size: 22px; }
+}
+
+/* three tiles side by side in the calendar: keep values on one line */
+#tab-calendar .s-tiles.three .v { white-space: nowrap; }
+#tab-calendar .s-tiles.three .k { overflow-wrap: anywhere; hyphens: auto; }
+@media (max-width: 480px) {
+  #tab-calendar .s-tiles.three { gap: 6px; }
+  #tab-calendar .s-tiles.three .v { font-size: 20px; }
+  #tab-calendar .s-tiles.three .k { font-size: 10px; letter-spacing: 0.02em; }
+  .cal-sel { padding-inline: 10px; }
+  #tab-calendar .s-tiles.three .s-tile { padding-inline: 8px; }
 }

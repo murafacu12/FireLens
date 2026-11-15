@@ -118,9 +118,20 @@ class FireEvent(_UtcModel):
         return None
 
 
+class EventPerimeter(BaseModel):
+    """Outline of the detected footprint (sensor pixels, gaps up to ~2 pixels closed, holes filled).
+    Where active fire was detected, at sensor resolution: not a mapped burn scar."""
+
+    rings: list[list[tuple[float, float]]]  # outer rings as (lon, lat), closed
+    area_km2: float  # area inside the outline
+    basis: str  # viirs_375m | modis_1km
+    gap_km: float  # widest gap between detections that was closed
+
+
 class FireEventDetail(FireEvent):
     detections: list[FireDetection]
     resolved_from: str | None = None  # the id asked for, when it was merged/renamed into this event
+    perimeter: EventPerimeter | None = None  # None with fewer than 3 pixels
 
 
 class EventPass(_UtcModel):

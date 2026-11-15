@@ -2,13 +2,14 @@ import "./styles.css";
 
 import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health, type Params } from "./api";
 import { clearAnalysis, runAnalysis, runSensors, wireAnalysis } from "./analysis";
-import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
+import { closeDetails, onDetailsChange, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
 import { setSpreadDrawer } from "./firereport";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { helpButton, mountGuide, mountLegend, showMapTip, wireHelp } from "./guide";
 import { revealMap, wireLayout } from "./layout";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
 import { mountGuideTab } from "./about";
+import { addDays, periodSummary, renderHeatmap, weekStart, WEEKS } from "./heatmap";
 import { isSimple, locale, onPrefsChange, t, tn, wirePrefs } from "./prefs";
 
 const filtersForm = $<HTMLFormElement>("#filters");
@@ -52,6 +53,15 @@ function setPicking(on: boolean): void {
   $("#globe").classList.toggle("crosshair", on);
 }
 
+// the outline of the fire open in the details panel; cleared when the panel shows anything else
+let perimeterOf: string | null = null;
+onDetailsChange((id) => {
+  if (id !== perimeterOf) {
+    perimeterOf = null;
+    globe.showPerimeter(null);
+  }
+});
+
 async function openEvent(id: string): Promise<void> {
   revealMap();
   try {
@@ -60,6 +70,8 @@ async function openEvent(id: string): Promise<void> {
       focusEventId = eventId;
       void refresh();
     });
+    perimeterOf = ev.id;
+    globe.showPerimeter(ev.perimeter);
     globe.flyToBox(ev.west, ev.south, ev.east, ev.north);
   } catch (err) {
     toast(t("toast.evFailed", { msg: (err as Error).message }), "error");
@@ -506,10 +518,20 @@ filtersForm.addEventListener("reset", () => {
   });
 });
 
+// "Hide low-confidence detections": a shortcut for the Confidence filter (Nominal and high).
+const hideLow = $<HTMLInputElement>("#hide-low");
+hideLow.addEventListener("change", (e) => {
+  e.stopPropagation(); // not a filter field itself: the select change below applies it
+  const sel = filtersForm.querySelector<HTMLSelectElement>('select[name="min_confidence"]')!;
+  sel.value = hideLow.checked ? "nominal" : "";
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+});
+
 /** What is currently narrowing the map, as removable chips under the stats. */
 function renderActiveFilters(): void {
   const f = new FormData(filtersForm);
   const v = (k: string) => ((f.get(k) as string | null) ?? "").trim();
+  hideLow.checked = v("min_confidence") !== ""; // in step with the select, the chips and Reset
   const chips: [string, string[]][] = [];
   const conf = v("min_confidence");
   const range = (lo: string, hi: string) => `${lo ? `≥ ${lo}` : ""}${lo && hi ? t("chip.and") : ""}${hi ? `≤ ${hi}` : ""}`;
@@ -618,52 +640,218 @@ $("#analysis-run").addEventListener("click", () => {
 wireAnalysis((id) => void openEvent(id));
 
 // ---------------------------------------------------------------- calendar
-let calDay: string | null = null;
-let calMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+// A contribution-style heatmap of WEEKS weeks (see heatmap.ts); the last column is the current week.
+// Scope: the whole world, or the area the globe showed when "This area" was chosen. Selection: one
+// day (click) or a period (drag across days); it sets the map's History period.
+let calSel: { from: string; to: string } | null = null;
+const latestFirst = () => addDays(weekStart(new Date()), -7 * (WEEKS - 1));
+let calFirst = latestFirst();
+let calDays: CalendarDay[] = []; // what the heatmap shows, kept to redraw on language changes
+let calNoData = new Set<string>(); // days with no data loaded (worldwide: no detection at all; area: coverage)
+let calScope: "world" | "area" = "world";
+let calBox: [number, number, number, number] | null = null;
+let calSeq = 0;
 
-async function renderCalendar(): Promise<void> {
-  const y = calMonth.getUTCFullYear();
-  const m = calMonth.getUTCMonth();
-  const first = new Date(Date.UTC(y, m, 1));
-  const last = new Date(Date.UTC(y, m + 1, 0));
-  $("#cal-title").textContent = first.toLocaleDateString(locale(), { month: "long", year: "numeric", timeZone: "UTC" });
-  let days: CalendarDay[] = [];
-  try {
-    days = await api.calendar({ start: isoDay(first), end: isoDay(last) });
-  } catch (err) {
-    toast(t("c.calFailed", { msg: (err as Error).message }), "error");
+const longDay = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString(locale(), { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+const shortDay = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString(locale(), { day: "numeric", month: "short", timeZone: "UTC" });
+const fmtCompact = (n: number) => n.toLocaleString(locale(), { notation: n >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 });
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000) + 1;
+
+function drawCalendar(): void {
+  const last = addDays(calFirst, 7 * WEEKS - 1);
+  const fmt = (d: Date, year: boolean) => d.toLocaleDateString(locale(), { month: "short", ...(year ? { year: "numeric" } : {}), timeZone: "UTC" });
+  $("#cal-title").textContent = `${fmt(calFirst, calFirst.getUTCFullYear() !== last.getUTCFullYear())} – ${fmt(last, true)}`;
+  $<HTMLButtonElement>("#cal-next").disabled = calFirst.getTime() >= latestFirst().getTime();
+  document.querySelectorAll<HTMLButtonElement>("#cal-scope [data-scope]").forEach((b) => b.classList.toggle("active", b.dataset.scope === calScope));
+  const areaLine = $("#cal-area");
+  areaLine.classList.toggle("hidden", calScope !== "area");
+  if (calScope === "area" && calBox) {
+    areaLine.innerHTML = `${esc(t("hm.areaIs", { area: boxLabel(calBox) }))} <button type="button" class="more-link" id="cal-use-view">${t("hm.useView")}</button>`;
   }
-  const max = Math.max(1, ...days.map((d) => d.detections));
-  const offset = (first.getUTCDay() + 6) % 7; // weeks start on Monday
-  const today = isoDay(new Date());
-  const cells = t("c.dow").split(",").map((d) => `<div class="dow">${d}</div>`);
-  for (let i = 0; i < offset; i++) cells.push("<div></div>");
-  for (const d of days) {
-    const heat = d.detections ? 0.15 + 0.85 * (Math.log(1 + d.detections) / Math.log(1 + max)) : 0;
-    cells.push(`<button type="button" class="day${d.date === today ? " today" : ""}" data-date="${d.date}"
-      style="--heat:${heat.toFixed(3)}" title="${esc(t("c.cellTitle", { d: d.detections.toLocaleString(locale()), e: d.events_started, f: fmtNum(d.max_frp_mw) }))}">
-      <span>${Number(d.date.slice(8))}</span>${d.events_started ? `<small>${d.events_started}</small>` : ""}</button>`);
-  }
-  $("#calendar").innerHTML = cells.join("");
+  $("#cal-hint").textContent = t(calScope === "area" ? "c.hintArea" : "c.hint");
+  $("#calendar").innerHTML = renderHeatmap({ first: calFirst, days: calDays, selected: calSel, noData: calNoData });
+  drawSelection();
+  const s = periodSummary(calDays);
+  $("#cal-summary").innerHTML = `
+    <h3>${t("hm.periodTitle")}</h3>
+    <div class="s-tiles three">
+      <div class="s-tile accent"><div class="k">${t("hm.total")}</div><div class="v">${fmtCompact(s.total)}</div><div class="sub">${t("hm.totalSub")}</div></div>
+      <div class="s-tile"><div class="k">${t("hm.newFires")}</div><div class="v">${fmtCompact(s.fires)}</div><div class="sub">${t("hm.newFiresSub")}</div></div>
+      <div class="s-tile"><div class="k">${t("hm.active")}</div><div class="v">${s.active}</div><div class="sub">${t("hm.activeSub", { n: calDays.length })}</div></div>
+    </div>
+    ${s.busiest ? `<button type="button" class="more-link" data-date="${s.busiest.date}">${t("hm.busiest", { day: longDay(s.busiest.date), n: s.busiest.detections.toLocaleString(locale()) })} →</button>` : ""}`;
 }
 
-$("#calendar").addEventListener("click", async (e) => {
-  const day = (e.target as HTMLElement).closest<HTMLElement>("[data-date]")?.dataset.date;
-  if (!day) return;
-  setHistoryRange(day, day);
-  setTimeMode("history");
-  calDay = day;
-  $("#cal-day-title").textContent = t("c.dayTitle", { day });
+/** The card for the selected day or period: its totals, actions and largest fires. */
+function drawSelection(): void {
+  const box = $("#cal-selection");
+  if (!calSel) {
+    box.innerHTML = "";
+    $("#cal-day-title").textContent = "";
+    $("#cal-events").innerHTML = "";
+    return;
+  }
+  const { from, to } = calSel;
+  const inSel = calDays.filter((d) => d.date >= from && d.date <= to);
+  const s = periodSummary(inSel);
+  const n = daysBetween(from, to);
+  const noData = inSel.filter((d) => calNoData.has(d.date)).length;
+  box.innerHTML = `
+    <div class="s-card cal-sel">
+      <div class="cal-sel-head"><div><div class="s-big">${from === to ? esc(longDay(from)) : `${esc(shortDay(from))} – ${esc(longDay(to))}`}</div>
+        <p>${esc(tn("hm.days", n))}${calScope === "area" ? ` · ${esc(t("hm.inArea"))}` : ""}</p></div>
+        <button type="button" class="icon" id="cal-clear" aria-label="${esc(t("hm.clear"))}" title="${esc(t("hm.clear"))}">×</button></div>
+      <div class="s-tiles three">
+        <div class="s-tile accent"><div class="k">${t("hm.total")}</div><div class="v">${fmtCompact(s.total)}</div></div>
+        <div class="s-tile"><div class="k">${t("hm.newFires")}</div><div class="v">${fmtCompact(s.fires)}</div></div>
+        <div class="s-tile"><div class="k">${t("hm.peakTile")}</div><div class="v">${s.busiest ? `${fmtNum(Math.max(...inSel.map((d) => d.max_frp_mw ?? 0)), 0)}<small>MW</small>` : "–"}</div></div>
+      </div>
+      ${noData ? `<p class="hint">${esc(tn("hm.selNoData", noData))}</p>` : ""}
+      <div class="actions"><button type="button" class="primary-wide" id="cal-analyse"><svg class="ic"><use href="#i-analysis" /></svg>${t("hm.analyse")}</button></div>
+      <p class="hint">${t("hm.onMap")}</p>
+    </div>`;
+  $("#cal-day-title").textContent = from === to ? t("c.dayTitle", { day: longDay(from) }) : t("hm.rangeTitle");
+}
+
+function boxLabel(b: number[]): string {
+  const lon = (x: number) => `${Math.abs(x).toFixed(1)}°${x < 0 ? t("an.W") : t("an.E")}`;
+  const lat = (y: number) => `${Math.abs(y).toFixed(1)}°${y < 0 ? t("an.S") : t("an.N")}`;
+  return t("an.box", { w: lon(b[0]), e: lon(b[2]), s: lat(b[1]), n: lat(b[3]) });
+}
+
+async function renderCalendar(): Promise<void> {
+  const mine = ++calSeq;
+  const last = addDays(calFirst, 7 * WEEKS - 1);
+  const today = new Date();
+  const start = isoDay(calFirst);
+  const end = isoDay(last < today ? last : today);
+  const bbox = calScope === "area" && calBox ? calBox.join(",") : undefined;
   try {
-    const events = await api.events({ start: `${day}T00:00:00Z`, end: `${day}T23:59:59Z`, sort: "area", limit: 15 });
+    const [days, cov] = await Promise.all([
+      api.calendar({ start, end, bbox }),
+      bbox ? api.coverage({ start, end, bbox }) : Promise.resolve(null),
+    ]);
+    if (mine !== calSeq) return;
+    calDays = days;
+    // worldwide, satellites always see fire somewhere: a zero is a day that is not loaded;
+    // in an area a zero can be a quiet day, so the coverage records decide
+    calNoData = cov
+      ? new Set(cov.days.filter((d) => d.status !== "loaded").map((d) => d.date))
+      : new Set(days.filter((d) => d.detections === 0).map((d) => d.date));
+  } catch (err) {
+    if (mine !== calSeq) return;
+    calDays = [];
+    calNoData = new Set();
+    toast(t("c.calFailed", { msg: (err as Error).message }), "error");
+  }
+  drawCalendar();
+}
+
+/** Show a day or a period: on the map (History mode), in the card, with its largest fires. */
+async function selectCalendar(from: string, to: string): Promise<void> {
+  if (to < from) [from, to] = [to, from];
+  calSel = { from, to };
+  setHistoryRange(from, to);
+  setTimeMode("history");
+  drawCalendar();
+  const mine = ++calSeq;
+  try {
+    const events = await api.events({ start: `${from}T00:00:00Z`, end: `${to}T23:59:59Z`, sort: "area", limit: 15,
+      bbox: calScope === "area" && calBox ? calBox.join(",") : undefined });
+    if (mine !== calSeq) return;
     $("#cal-events").innerHTML = events.length
       ? events.map((ev) => `<li><a href="#" data-event="${esc(ev.id)}">
           <b>${fmtNum(ev.area_km2, 2)} km²</b> · ${ev.detection_count} ${t("c.det")} · max ${fmtNum(ev.max_frp_mw, 0)} MW
-          <small>${ev.latitude.toFixed(2)}, ${ev.longitude.toFixed(2)} · ${statePill(ev)}</small></a></li>`).join("")
+          <small>${esc(shortDay(ev.start_at.slice(0, 10)))} · ${ev.latitude.toFixed(2)}, ${ev.longitude.toFixed(2)} · ${statePill(ev)}</small></a></li>`).join("")
       : `<li class="empty">${t("c.noEvents")}</li>`;
   } catch (err) {
     toast((err as Error).message, "error");
   }
+}
+
+function setCalendarScope(scope: "world" | "area"): void {
+  if (scope === "area") {
+    const view = globe.viewBbox();
+    // a view of (nearly) the whole globe is the worldwide calendar
+    if (!view || (view[2] - view[0] + 360) % 360 > 300 || view[3] - view[1] > 150) {
+      toast(t("hm.zoomIn"));
+      scope = "world";
+    } else {
+      calBox = view;
+    }
+  }
+  calScope = scope;
+  calSel = null;
+  void renderCalendar();
+}
+
+// hover: the same tooltip as the charts
+$("#calendar").addEventListener("mousemove", (e) => {
+  const tip = $("#chart-tip");
+  const cell = (e.target as Element).closest<SVGElement>("[data-tip]");
+  if (!cell || drag) return tip.classList.add("hidden");
+  const [head, ...rows] = (cell.dataset.tip ?? "").split("|");
+  tip.innerHTML = `<b>${esc(head)}</b>${rows.map((r) => `<div>${esc(r)}</div>`).join("")}`;
+  tip.classList.remove("hidden");
+  tip.style.left = `${Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8)}px`;
+  tip.style.top = `${e.clientY + 14}px`;
+});
+$("#calendar").addEventListener("mouseleave", () => $("#chart-tip").classList.add("hidden"));
+
+// select: press on a day, drag over others (mouse or finger), release; a press without a drag is one day
+let drag: { from: string; to: string } | null = null;
+const dayAt = (x: number, y: number) => document.elementFromPoint(x, y)?.closest<SVGElement>(".heatmap [data-date]")?.dataset.date ?? null;
+function markDrag(): void {
+  if (!drag) return;
+  const [a, b] = drag.from <= drag.to ? [drag.from, drag.to] : [drag.to, drag.from];
+  document.querySelectorAll<SVGElement>(".heatmap [data-date]").forEach((r) => {
+    const d = r.dataset.date!;
+    r.classList.toggle("sel", d >= a && d <= b);
+  });
+}
+$("#calendar").addEventListener("pointerdown", (e) => {
+  const d = dayAt(e.clientX, e.clientY);
+  if (!d) return;
+  e.preventDefault();
+  drag = { from: d, to: d };
+  markDrag();
+  $("#chart-tip").classList.add("hidden");
+});
+window.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const d = dayAt(e.clientX, e.clientY);
+  if (d && d !== drag.to) {
+    drag.to = d;
+    markDrag();
+  }
+});
+window.addEventListener("pointerup", () => {
+  if (!drag) return;
+  const { from, to } = drag;
+  drag = null;
+  void selectCalendar(from, to);
+});
+
+$("#cal-summary").addEventListener("click", (e) => {
+  const day = (e.target as HTMLElement).closest<HTMLElement>("[data-date]")?.dataset.date;
+  if (day) void selectCalendar(day, day);
+});
+$("#cal-selection").addEventListener("click", (e) => {
+  const el = e.target as HTMLElement;
+  if (el.closest("#cal-clear")) {
+    calSel = null;
+    drawCalendar();
+  } else if (el.closest("#cal-analyse")) {
+    document.querySelector<HTMLButtonElement>('.tab[data-tab="analysis"]')?.click();
+    $<HTMLButtonElement>("#analysis-run").click();
+  }
+});
+$("#cal-area").addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).closest("#cal-use-view")) setCalendarScope("area");
+});
+$("#cal-scope").addEventListener("click", (e) => {
+  const s = (e.target as HTMLElement).closest<HTMLElement>("[data-scope]")?.dataset.scope;
+  if (s === "world" || s === "area") setCalendarScope(s);
 });
 $("#cal-events").addEventListener("click", (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>("[data-event]")?.dataset.event;
@@ -673,11 +861,12 @@ $("#cal-events").addEventListener("click", (e) => {
   }
 });
 $("#cal-prev").addEventListener("click", () => {
-  calMonth = new Date(Date.UTC(calMonth.getUTCFullYear(), calMonth.getUTCMonth() - 1, 1));
+  calFirst = addDays(calFirst, -7 * WEEKS);
   void renderCalendar();
 });
 $("#cal-next").addEventListener("click", () => {
-  calMonth = new Date(Date.UTC(calMonth.getUTCFullYear(), calMonth.getUTCMonth() + 1, 1));
+  const next = addDays(calFirst, 7 * WEEKS);
+  calFirst = next.getTime() > latestFirst().getTime() ? latestFirst() : next;
   void renderCalendar();
 });
 
@@ -837,8 +1026,9 @@ historyForm.addEventListener("submit", async (e) => {
     const job = await api.backfill(body);
     renderJob(job);
     watchJob(job.id);
-    // land the calendar on the month being loaded
-    calMonth = new Date(Date.UTC(Number(body.start.slice(0, 4)), Number(body.start.slice(5, 7)) - 1, 1));
+    // land the calendar on the period being loaded (it starts in the first column)
+    const loadedFirst = weekStart(new Date(`${body.start}T00:00:00Z`));
+    calFirst = loadedFirst.getTime() > latestFirst().getTime() ? latestFirst() : loadedFirst;
   } catch (err) {
     toast(t("c.startFailed", { msg: (err as Error).message }), "error");
   }
@@ -903,10 +1093,9 @@ onPrefsChange(() => {
   renderHistoryAvailability();
   describeAnalysisScope();
   const tab = document.querySelector<HTMLElement>(".tab.active")?.dataset.tab;
-  if (tab === "calendar") void renderCalendar();
+  if (tab === "calendar") drawCalendar();
   if (tab === "alerts") void renderAlerts();
   if (tab === "guide") mountGuideTab($("#tab-guide"));
-  if (calDay) $("#cal-day-title").textContent = t("c.dayTitle", { day: calDay });
 });
 describeAnalysisScope();
 (historyForm.elements.namedItem("end") as HTMLInputElement).value = isoDay(daysAgo(1));

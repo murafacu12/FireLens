@@ -104,6 +104,8 @@
                 <label><input type="checkbox" name="instrument" value="MODIS" checked /> MODIS <small>1 km</small></label>
                 <label><input type="checkbox" name="instrument" value="VIIRS" checked /> VIIRS <small>375 m</small></label>
               </div>
+              <label class="hide-low"><input type="checkbox" id="hide-low" /> <span data-i18n="f.hideLow">Hide low-confidence detections</span>
+                <button type="button" class="help" data-help="confidence" aria-label="Explain">?</button></label>
               <div class="adv">
                 <div class="sat-label"><span data-i18n="f.satellites">Satellites</span> <small data-i18n="f.noneAll">(none ticked = all)</small></div>
                 <div class="toggle-chips">
@@ -202,8 +204,15 @@
             <h2 id="cal-title"></h2>
             <button type="button" id="cal-next" class="icon" aria-label="Next month" data-i18n-attr="aria-label:c.next">›</button>
           </div>
-          <div id="calendar" class="calendar"></div>
-          <p class="hint" data-i18n="c.hint">Colour = detections per day.</p>
+          <div id="cal-scope" class="segmented cal-scope" role="group">
+            <button type="button" data-scope="world" data-i18n="hm.world">World</button>
+            <button type="button" data-scope="area" data-i18n="hm.area">This area</button>
+          </div>
+          <p id="cal-area" class="hint cal-area hidden"></p>
+          <div id="calendar" class="calendar-heatmap"></div>
+          <p class="hint" id="cal-hint"></p>
+          <div id="cal-selection"></div>
+          <div id="cal-summary"></div>
           <h3 id="cal-day-title"></h3>
           <ul id="cal-events" class="list"></ul>
 

@@ -27,14 +27,22 @@ type Shown =
 let shown: Shown = null;
 const risks = new Map<string, RiskForecast>(); // forecasts already loaded, by "lat,lon"
 
+let onShownChange: (eventId: string | null) => void = () => {};
+/** Called with the id of the fire the panel shows, or null (another kind of details, or closed). */
+export function onDetailsChange(fn: (eventId: string | null) => void): void {
+  onShownChange = fn;
+}
+
 function panel(html: string): void {
   $("#details-body").innerHTML = html;
   $("#details").classList.remove("hidden");
+  onShownChange(shown?.kind === "event" ? shown.ev.id : null);
 }
 
 export function closeDetails(): void {
   $("#details").classList.add("hidden");
   shown = null;
+  onShownChange(null);
   forgetFireReport();
   clearSpread();
 }
@@ -111,6 +119,7 @@ function eventSimple(ev: FireEventDetail): string {
       ${tile(t("d.sObserved"), duration(ev.observed_hours), t("d.sPasses", { n: ev.pass_count }))}
       ${tile(t("d.sDetections"), ev.detection_count.toLocaleString(locale()), `VIIRS ${ev.viirs_count} · MODIS ${ev.modis_count}`)}
     </div>
+    ${ev.perimeter ? `<p class="hint perimeter-hint"><span class="perimeter-swatch"></span>${t("d.sPerimeter", { km2: fmtNum(ev.perimeter.area_km2, ev.perimeter.area_km2 < 10 ? 1 : 0) })}</p>` : ""}
     ${powerGauge(ev.peak_pass_frp_mw)}
     <div class="s-card"><div class="s-big ${tone}"><span class="dot-state"></span>${t(trendKey)}</div>
       <p>${t(`d.sLevel.${powerLevel(ev.peak_pass_frp_mw)}` as Key)}</p></div>`;
@@ -144,6 +153,7 @@ function eventAdvanced(ev: FireEventDetail): string {
       [t("d.footprint"), ev.area_basis === "modis_1km"
         ? `≈ ${fmtNum(ev.area_km2, 1)} km² <small>${t("d.modisPx")}</small>`
         : `${fmtNum(ev.area_km2, 2)} km² <small>${t("d.viirsPx")}</small>`],
+      ...(ev.perimeter ? [[t("d.perimeter"), `${fmtNum(ev.perimeter.area_km2, 2)} km² <small>${t("d.perimeterNote", { n: ev.perimeter.rings.length, km: fmtNum(ev.perimeter.gap_km, 2) })}</small>`] as [string, string]] : []),
       [t("d.hull"), `${fmtNum(ev.detection_hull_km2, 2)} km² <small>${t("d.hullNote", { km: fmtNum(ev.extent_km, 1) })}</small>`],
       ...(growth ? [[t("d.growth"), `${growth} <small>${t("d.growthNote")}</small>`] as [string, string]] : []),
       [t("d.burned"), `<small>${t("d.burnedNote")}</small>`],

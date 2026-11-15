@@ -17,6 +17,9 @@ import {
   OpenStreetMapImageryProvider,
   type OrthographicOffCenterFrustum,
   PointPrimitiveCollection,
+  PolygonGeometry,
+  PolygonHierarchy,
+  PolygonOutlineGeometry,
   Primitive,
   PrimitiveCollection,
   Rectangle,
@@ -34,7 +37,7 @@ import {
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
-import type { AlertRule, CompactDetections, FireEvent } from "./api";
+import type { AlertRule, CompactDetections, EventPerimeter, FireEvent } from "./api";
 import { batch, instance, MARKER_HEIGHT_M, NO_DEPTH_TEST_WITHIN_M, RAMP, rampIndex } from "./render";
 import type { HoverTarget } from "./guide";
 import { drawnEvents, FireTiles, type Lod, MAX_CELL_LEVEL, MIN_LEVEL, POINT_ZOOM, renderEvents, TILE_SHIFT } from "./tiles";
@@ -53,6 +56,7 @@ const POINTS_ALWAYS_BELOW = 3_000; // at most this many fires in view: always in
 const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
 const GIBS_CREDIT = new Credit("Imagery: NASA EOSDIS GIBS");
 const ZONE_COLOR = Color.fromCssColorString("#38bdf8");
+const PERIMETER_COLOR = Color.fromCssColorString("#ff8a42"); // FIRELENS orange
 
 function yesterday(): string {
   return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
@@ -83,6 +87,7 @@ export class Globe {
   private readonly ndviLayer: ImageryLayer;
   private readonly detections: Layer; // focus mode: one fire's detections
   private readonly events: Layer; // focus mode
+  private readonly perimeter: Layer; // outline of the fire open in the details panel
   private readonly zones: Layer;
   private readonly pinned: Layer;
   /** Fires everywhere else: tiles chosen by zoom level (see tiles.ts). */
@@ -116,6 +121,17 @@ export class Globe {
     scene.globe.enableLighting = false;
     scene.globe.baseColor = Color.fromCssColorString("#0b1a2b"); // shown while/if tiles fail
     scene.globe.tileCacheSize = 300; // revisiting an area doesn't refetch tiles
+    // Switching 3D / 2D / Columbus is an animation: on-demand rendering would draw one frame of it
+    // and leave the map stuck half-way (no imagery, fires in a half-flattened projection). Render
+    // continuously while it runs, then reload the fires for the new view (scale and footprint change).
+    scene.morphStart.addEventListener(() => {
+      scene.requestRenderMode = false;
+    });
+    scene.morphComplete.addEventListener(() => {
+      scene.requestRenderMode = true;
+      this.redraw();
+      this.viewer.camera.moveEnd.raiseEvent();
+    });
 
     const layers = this.viewer.imageryLayers;
     this.baseLayers = {
@@ -144,6 +160,7 @@ export class Globe {
     this.zones = new Layer(scene.primitives);
     const tileEvents = scene.primitives.add(new PrimitiveCollection());
     this.events = new Layer(scene.primitives);
+    this.perimeter = new Layer(scene.primitives);
     const tileFires = scene.primitives.add(new PrimitiveCollection());
     this.detections = new Layer(scene.primitives);
     this.pinned = new Layer(scene.primitives);
@@ -406,6 +423,34 @@ export class Globe {
     this.redraw();
   }
 
+  /** The outline of the fire open in the details panel (null clears it). Longitudes are unwrapped
+   * along each ring so a fire on the antimeridian is not drawn round the world. */
+  showPerimeter(p: EventPerimeter | null): void {
+    if (!p) {
+      this.perimeter.replace();
+      this.redraw();
+      return;
+    }
+    const fills: GeometryInstance[] = [];
+    const lines: GeometryInstance[] = [];
+    for (const ring of p.rings) {
+      const flat: number[] = [];
+      let prev = ring[0][0];
+      for (const [lon, lat] of ring) {
+        let x = lon;
+        while (x - prev > 180) x -= 360;
+        while (x - prev < -180) x += 360;
+        flat.push(x, lat);
+        prev = x;
+      }
+      const polygonHierarchy = new PolygonHierarchy(Cartesian3.fromDegreesArray(flat));
+      fills.push(instance(new PolygonGeometry({ polygonHierarchy, height: 0 }), PERIMETER_COLOR.withAlpha(0.18)));
+      lines.push(instance(new PolygonOutlineGeometry({ polygonHierarchy, height: 0 }), PERIMETER_COLOR));
+    }
+    this.perimeter.replace(batch(fills, false, false), batch(lines, true, false));
+    this.redraw();
+  }
+
   /** Focus mode: one fire's footprint (every other fire comes from the tiles). */
   showEvents(events: FireEvent[]): void {
     this.events.replace(events.length ? renderEvents(events, null) : null);
@@ -489,10 +534,33 @@ export class Globe {
 
   /** Current camera footprint as west,south,east,north (degrees), or null when looking at space. */
   viewBbox(): [number, number, number, number] | null {
+    if (this.viewer.scene.mode === SceneMode.SCENE2D) return this.viewBbox2D();
     const r = this.viewer.camera.computeViewRectangle();
     if (!r) return null;
     const d = (x: number) => Math.round(CesiumMath.toDegrees(x) * 1e4) / 1e4;
     return [d(r.west), d(r.south), d(r.east), d(r.north)];
+  }
+
+  /** The 2D map's footprint from the camera and its orthographic frustum. Cesium's own
+   * computeViewRectangle swaps west and east once the map shows more than half the world (a view of
+   * 143°W..143°E came back as a 74° strip across the antimeridian), so only the map's edges got fires. */
+  private viewBbox2D(): [number, number, number, number] {
+    const cam = this.viewer.camera;
+    const f = cam.frustum as OrthographicOffCenterFrustum;
+    const proj = this.viewer.scene.mapProjection;
+    const corner = (x: number, y: number) => proj.unproject(new Cartesian3(cam.position.x + x, cam.position.y + y, 0));
+    const sw = corner(f.left ?? 0, f.bottom ?? 0);
+    const ne = corner(f.right ?? 0, f.top ?? 0);
+    const deg = CesiumMath.toDegrees;
+    const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
+    const south = r4(Math.max(-90, deg(sw.latitude))), north = r4(Math.min(90, deg(ne.latitude)));
+    let west = deg(sw.longitude), east = deg(ne.longitude);
+    if (east - west >= 360) return [-180, south, 180, north];
+    const wrap = (x: number) => ((((x + 180) % 360) + 360) % 360) - 180;
+    west = wrap(west);
+    east = wrap(east);
+    if (east === -180) east = 180;
+    return [r4(west), south, r4(east), north]; // west > east: the view crosses the antimeridian
   }
 
   /** Like viewBbox, but when the edge of the globe is in view (where viewBbox falls back to the
