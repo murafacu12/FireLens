@@ -211,6 +211,95 @@ interface Comparison {
   };
 }
 
+export type BaselineVerdict =
+  | "within_range" | "above" | "well_above" | "below" | "well_below"
+  | "insufficient_seasons" | "too_few_fires" | "current_incomplete" | "no_archive" | "area_not_covered";
+
+export interface BaselineGroup {
+  label: string;
+  seasons: number;
+  area_fraction: number;
+  verdict: BaselineVerdict;
+  area?: number[][];
+  current?: number;
+  current_complete?: boolean;
+  current_days?: { archive: number; live: number; missing: number };
+  years?: { year: number; first: string; detections: number }[];
+  median?: number;
+  min?: number;
+  max?: number;
+  ratio?: number | null;
+  rank?: number;
+  daily?: { date: string; current: number; median: number; min: number; max: number }[];
+}
+
+/** GET /api/analysis/baseline: the period against the same calendar days of earlier years. */
+export interface SeasonalBaseline {
+  available: boolean;
+  reason: "no_baseline" | "period_too_short" | "area_not_covered" | "no_archive" | null;
+  cell_deg: number;
+  days?: { first: string; last: string; count: number };
+  groups: Record<"viirs_noaa20" | "modis", BaselineGroup>;
+  headline: "viirs_noaa20" | "modis" | null;
+}
+
+export interface LandShare { class: string; label: string; share: number }
+
+/** GET /api/events/{id}/ground: land cover and terrain of a fire. */
+export interface FireGround {
+  event_id: string;
+  under_detections?: LandShare[] | null;
+  around?: LandShare[] | null;
+  burnable_share_around?: number;
+  landcover_coverage: number;
+  terrain?: {
+    elevation_min_m: number; elevation_mean_m: number; elevation_max_m: number;
+    slope_mean_deg: number; slope_p90_deg: number; steep_share: number;
+    slopes_face: string | null; facing_strength: number; coverage: number;
+  };
+}
+
+export interface Anomaly {
+  available: boolean; during?: number; before?: number | null; change?: number | null;
+  peak?: number; peak_day?: string; days_during?: number; days_before?: number; error?: string;
+}
+
+/** GET /api/events/{id}/satellites: what Sentinel-2/3/5P saw. */
+export interface FireSatellites {
+  event_id: string;
+  active: boolean;
+  detected_footprint_km2: number;
+  vegetation_before: { available: boolean; ndvi?: number | null; ndmi?: number | null; clear_fraction?: number; error?: string };
+  burn_scar: {
+    available: boolean; so_far?: boolean; reason?: string; error?: string; burned_km2?: number; box_km2?: number;
+    clear_fraction?: number; severity?: Record<string, number>; after_to?: string;
+  };
+  surface_temperature: Anomaly;
+  smoke: { co: Anomaly; aerosol_index: Anomaly; error?: string; available?: boolean };
+}
+
+/** GET /api/events/{id}/spread: where a burning fire could spread in the next 24 h. */
+export interface SpreadOutlook {
+  event_id: string;
+  t0: string;
+  grid: { west: number; north: number; step: number; rows: number; cols: number; hours_b64: string };
+  area_km2: Record<"6h" | "12h" | "24h", number>;
+  head: { bearing_deg: number; distance_km: number } | null;
+  weather: { from_h: number; wind_kmh: number; toward_deg: number; rh_min: number; rain_mm: number }[];
+  front_detections: number;
+  ground_coverage: number;
+  backtest: { fires: number; capture_24h: number; circle_capture_24h: number; median_area_km2: number; passed: boolean } | null;
+  experimental: boolean;
+}
+
+/** GET /api/analysis/landcover: the period's detections by land-cover class. */
+export interface LandcoverBreakdown {
+  detections: number;
+  coverage: number;
+  classes: { class: string; label: string; meaning: string | null; detections: number; share: number; viirs: number; modis: number }[];
+  source: string;
+}
+
 /** GET /api/analysis/sensors: MODIS vs VIIRS on coincident observations. */
 export interface SensorComparison {
   bbox: number[];
@@ -419,6 +508,11 @@ export const api = {
   tilesMeta: () => request<TileMeta>("/api/tiles/meta"),
   analysis: (p: Params) => request<AnalysisSummary>(`/api/analysis/summary${query(p)}`),
   sensors: (p: Params) => request<SensorComparison>(`/api/analysis/sensors${query(p)}`),
+  baseline: (p: Params) => request<SeasonalBaseline>(`/api/analysis/baseline${query(p)}`),
+  landcover: (p: Params) => request<LandcoverBreakdown>(`/api/analysis/landcover${query(p)}`),
+  eventGround: (id: string) => request<FireGround>(`/api/events/${encodeURIComponent(id)}/ground`),
+  eventSatellites: (id: string) => request<FireSatellites>(`/api/events/${encodeURIComponent(id)}/satellites`),
+  eventSpread: (id: string) => request<SpreadOutlook>(`/api/events/${encodeURIComponent(id)}/spread`),
   tile,
   detections: (p: Params) => request<FireDetection[]>(`/api/detections${query(p)}`),
   detectionsCompact: (p: Params) => request<CompactDetections>(`/api/detections/compact${query(p)}`),

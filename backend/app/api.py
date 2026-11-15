@@ -6,9 +6,11 @@ import json
 import threading
 from collections import OrderedDict
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Literal
 
 import httpx
+import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
@@ -33,7 +35,8 @@ from app.schemas import (
     IngestReport,
     IngestRequest,
 )
-from app.services import analysis, cells, queries, sensor_compare
+from app.services import analysis, baseline, cells, fire_report, landscape, queries, sensor_compare, sentinel
+from app.services import spread as spread_model
 from app.services.ndvi import CopernicusNdvi, NdviResult
 from app.services.alerts import deliver_webhooks, evaluate_rules
 from app.services.coverage import day_status
@@ -242,6 +245,77 @@ def event_history(event_id: str, session: SessionDep):
     return rows
 
 
+@router.get("/events/{event_id}/ground")
+def event_ground(event_id: str, session: SessionDep):
+    """The ground a fire burns on: land cover under its detections and around it (ESA WorldCover),
+    and terrain (Copernicus DEM). Uses no Copernicus quota; tiles download on first use."""
+    row = session.get(EventRow, _canonical(session, event_id))
+    return fire_report.ground_cached(session, row)
+
+
+@router.get("/events/{event_id}/satellites")
+async def event_satellites(event_id: str, request: Request, session: SessionDep):
+    """What Sentinel-2/3/5P saw: vegetation before the fire, burn scar, daytime ground temperature
+    and smoke. Spends Copernicus processing units, so results are cached per event version."""
+    client: sentinel.CdseStats | None = request.app.state.cdse
+    if client is None:
+        raise HTTPException(503, "Copernicus is not configured (FIRELENS_COPERNICUS_CLIENT_ID / _SECRET)")
+    row = await run_in_threadpool(lambda: session.get(EventRow, _canonical(session, event_id)))
+    return await fire_report.satellites_cached(client, row)
+
+
+_spread_cache: OrderedDict = OrderedDict()
+
+
+@router.get("/events/{event_id}/spread")
+async def event_spread(event_id: str, request: Request, session: SessionDep, settings: SettingsDep):
+    """Where a burning fire could spread in the next 24 h (6/12/24 h zones) from its latest front,
+    land cover, terrain and the hourly wind forecast. An estimate with a measured hit rate, not a
+    fire-behaviour simulation: see docs/FIRE_SPREAD.md."""
+    if not spread_model.ENABLED:
+        raise HTTPException(404, "spread outlook disabled: it did not beat a plain circle in the backtest (docs/FIRE_SPREAD.md)")
+    cid = _canonical(session, event_id)
+
+    def load():
+        row = session.get(EventRow, cid)
+        dets = session.execute(select(DetectionRow.latitude, DetectionRow.longitude, DetectionRow.acquired_at).where(
+            DetectionRow.event_id == cid, DetectionRow.static_kind.is_(None))).all()
+        return row, dets
+
+    row, dets = await run_in_threadpool(load)
+    now = datetime.now(UTC)
+    end = row.end_at.replace(tzinfo=UTC) if row.end_at.tzinfo is None else row.end_at
+    if now - end > timedelta(hours=spread_model.FRONT_HOURS + 12):
+        raise HTTPException(409, "no detection in the last day: there is no current front to spread from")
+    t0 = now.replace(minute=0, second=0, microsecond=0)
+    key = (cid, row.version, t0)
+    if key in _spread_cache:
+        return _spread_cache[key]
+    last = max(d.acquired_at for d in dets)
+    front = [d for d in dets if (last - d.acquired_at).total_seconds() <= spread_model.FRONT_HOURS * 3600]
+    flat = np.array([d.latitude for d in front])
+    flon = np.array([d.longitude for d in front])
+    try:
+        hourly = await spread_model.fetch_hourly(request.app.state.http, settings.open_meteo_url, float(flat.mean()), float(flon.mean()),
+                                                 t0, t0 + timedelta(hours=spread_model.HOURS + 1))
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"weather forecast unavailable: {exc}") from None
+
+    def run():
+        g = spread_model.make_grid(float(flat.mean()), float(flon.mean()))
+        base, slope, downhill, cov = spread_model.ground_layers(g)
+        out = spread_model.forecast(g, base, slope, downhill, flat, flon, hourly, t0)
+        out.update(event_id=cid, front_detections=len(front), ground_coverage=round(cov, 3),
+                   backtest=spread_model.BACKTEST, experimental=spread_model.EXPERIMENTAL)
+        return out
+
+    result = await run_in_threadpool(run)
+    _spread_cache[key] = result
+    while len(_spread_cache) > 32:
+        _spread_cache.popitem(last=False)
+    return result
+
+
 @router.get("/events/{event_id}/lineage", response_model=list[EventLineage])
 def event_lineage(event_id: str, session: SessionDep):
     """Lineage records naming this id: what it absorbed (new_id = id) and what it became (old_id = id)."""
@@ -357,22 +431,79 @@ def analysis_summary(
                    lambda: analysis.analyze(session, box, start, end, assume_loaded=settings.is_demo))
 
 
+@router.get("/analysis/baseline")
+def analysis_baseline(
+    session: SessionDep,
+    settings: SettingsDep,
+    bbox: Annotated[str | None, Query(description="west,south,east,north; omit for the whole world")] = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    hours: Annotated[int | None, Query(ge=1, le=24 * 400, description="rolling window back from now, instead of start/end")] = None,
+):
+    """Seasonal baseline: detections in the period against the same calendar days of earlier years,
+    per satellite group, over the same area (whole UTC days; see app/services/baseline.py)."""
+    try:
+        box = queries.parse_bbox(bbox)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    t0, t1 = _analysis_period(hours, start, end)
+    path = Path(settings.baseline_db_path) if settings.baseline_db_path else baseline.default_path()
+    return _cached(session, ("baseline", box, t0, t1, baseline.version(path), datetime.now(UTC).date()),
+                   lambda: baseline.compare(session, baseline.open_ro(path), box, t0, t1, assume_loaded=settings.is_demo))
+
+
+@router.get("/analysis/landcover")
+def analysis_landcover(
+    session: SessionDep,
+    bbox: Annotated[str | None, Query(description="west,south,east,north; omit for the whole world")] = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    hours: Annotated[int | None, Query(ge=1, le=24 * 400, description="rolling window back from now, instead of start/end")] = None,
+):
+    """What is burning: the period's detections by land-cover class (ESA WorldCover 2021). Land-cover
+    tiles are downloaded on first use; until all are in, `coverage` < 1 and the result is not cached."""
+    try:
+        box = queries.parse_bbox(bbox)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    t0, t1 = _analysis_period(hours, start, end)
+    return _cached(session, ("landcover", box, t0, t1), lambda: landscape.detections_by_landcover(session, box, t0, t1),
+                   keep=lambda r: r["coverage"] >= 1.0)
+
+
 ANALYSIS_CACHE_MAX = 64
 _analysis_cache: OrderedDict = OrderedDict()
 
 
-def _cached(session: Session, key: tuple, compute):
-    """Analysis results stay valid until new data arrives (data_version), like the map tiles."""
+_analysis_running: dict[tuple, threading.Lock] = {}
+
+
+def _cached(session: Session, key: tuple, compute, keep=lambda result: True):
+    """Analysis results stay valid until new data arrives (data_version), like the map tiles.
+    Identical requests arriving together (a double click, two tabs) compute once: the later ones
+    wait for the first and take its result."""
     full = (cells.data_version(session), *key)
     with _tile_lock:
         if full in _analysis_cache:
             _analysis_cache.move_to_end(full)
             return _analysis_cache[full]
-    result = compute()
-    with _tile_lock:
-        _analysis_cache[full] = result
-        while len(_analysis_cache) > ANALYSIS_CACHE_MAX:
-            _analysis_cache.popitem(last=False)
+        running = _analysis_running.setdefault(full, threading.Lock())
+    with running:
+        with _tile_lock:
+            if full in _analysis_cache:  # computed while this request waited
+                return _analysis_cache[full]
+        try:
+            result = compute()
+        except BaseException:
+            with _tile_lock:
+                _analysis_running.pop(full, None)
+            raise
+        with _tile_lock:
+            if keep(result):  # e.g. not while land-cover tiles are still downloading
+                _analysis_cache[full] = result
+            _analysis_running.pop(full, None)
+            while len(_analysis_cache) > ANALYSIS_CACHE_MAX:
+                _analysis_cache.popitem(last=False)
     return result
 
 

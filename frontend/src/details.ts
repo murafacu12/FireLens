@@ -1,4 +1,5 @@
 import { api, type EventHistoryEntry, type EventPass, type FireDetection, type FireEvent, type FireEventDetail, type RiskForecast } from "./api";
+import { clearSpread, mountFireReport } from "./firereport";
 import { $, esc, fmtNum, fmtTime, toast } from "./util";
 
 const STATIC_LABEL: Record<string, string> = {
@@ -18,6 +19,7 @@ function panel(html: string): void {
 
 export function closeDetails(): void {
   $("#details").classList.add("hidden");
+  clearSpread();
 }
 
 function riskButton(lat: number, lon: number): string {
@@ -88,13 +90,14 @@ export function showEvent(ev: FireEventDetail, onFocusDetections: (id: string) =
         : `${fmtNum(ev.area_km2, 2)} km² <small>(VIIRS 375 m pixels)</small>`],
       ["Detections span", `${fmtNum(ev.detection_hull_km2, 2)} km² <small>(hull of detection centres) · ${fmtNum(ev.extent_km, 1)} km across</small>`],
       ...(growth ? [["Footprint growth", `${growth} <small>(apparent, from detections)</small>`] as [string, string]] : []),
-      ["Burned area", "<small>Not measured by FireLens</small>"],
+      ["Burned area", "<small>See the satellite report below (Sentinel-2 burn scar)</small>"],
       ["Max confidence", `${ev.max_confidence_pct}%`],
     ])}
     <div class="frp-timeline"><p class="hint">Loading fire power per satellite pass…</p></div>
     <p class="hint">Detected footprint = the satellite pixels that saw fire over the event's life, at the sensor's
       nominal resolution. Neither it nor the detections span is burned area. "No detection" can mean cloud, smoke or
       a missed pass, not that the fire is out.</p>
+    <div class="fire-report"></div>
     <details class="history"><summary>Change history</summary><div class="history-body">Loading…</div></details>
     <div class="actions">
       <button type="button" id="focus-dets">Show only this event's detections</button>
@@ -102,6 +105,8 @@ export function showEvent(ev: FireEventDetail, onFocusDetections: (id: string) =
     ${riskButton(ev.latitude, ev.longitude)}
   `);
   $("#focus-dets").addEventListener("click", () => onFocusDetections(ev.id));
+  // a current front to spread from: detected in the last day (as the API requires)
+  mountFireReport($(".fire-report"), ev.id, Date.now() - new Date(ev.end_at).getTime() < 24 * 3_600_000);
   api.eventTimeline(ev.id).then(
     (passes) => ($(".frp-timeline").innerHTML = frpChart(passes)),
     () => ($(".frp-timeline").innerHTML = ""),

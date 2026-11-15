@@ -81,6 +81,16 @@ How to read it:
 * The time gap mixes fire evolution with sensor differences. The baseline separates them only
   approximately, since its gap is ~50 min instead of ~100 min.
 * Near-real-time data. Results may shift slightly when the archive (SP) versions arrive.
-* Cost: about 1 s for a region and 10–15 s for a continent. Results are cached until new data
-  arrives. Areas with more than 400,000 detections in the period are refused: zoom in or shorten
-  the period.
+* Cost: under 0.5 s for a region, about 2 s for a continent over a week, and about 4–5 s for the
+  whole world over 3 days.
+  * The matching uses KD-trees over unit vectors, with time as a scaled 4th axis. The chord test
+    is exactly equivalent to the haversine one; `tests/test_sensor_compare_matching.py` checks it
+    against brute force.
+  * It returns the same counts, match rates and medians as the earlier pure-Python version on real
+    data.
+  * Cluster FRP is summed exactly, in hundredths of a MW.
+  * Results are cached until new data arrives, and identical requests arriving together compute
+    once.
+  * Areas with more than 400,000 detections in the period are refused: zoom in or shorten the
+    period.
+* The FRP scatter points are returned for MODIS vs VIIRS only, not for the NOAA-20/21 baseline.

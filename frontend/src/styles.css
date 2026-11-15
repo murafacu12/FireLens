@@ -261,6 +261,29 @@ table.risk td { padding: 4px; border-bottom: 1px solid var(--line); }
 .chart .dot { fill: #9a6fd8; stroke: var(--panel); stroke-width: 1; }
 .chart .identity { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .chart .id-label { font-style: italic; }
+/* seasonal baseline: past seasons recessive, this period in the accent; the median as a dashed rule */
+.chart .season { fill: #5b6878; }
+.chart .season-now { fill: var(--accent); }
+.chart .median { stroke: var(--text); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
+.chart .median-label { fill: var(--text); opacity: 0.8; }
+.chart .val-now { fill: var(--text); font-size: 10px; font-weight: 600; }
+.chart .axis.now { fill: var(--text); font-weight: 600; }
+/* share bars: land cover, burn severity */
+.share-bar { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--panel-2); margin: 4px 0; gap: 1px; }
+.share-bar span { display: block; height: 100%; min-width: 2px; }
+.share-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--muted); }
+.share-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.lead-line { margin: 4px 0 2px; font-size: 13px; }
+.fire-report h3 { margin-top: 14px; }
+.spread-slot { margin-top: 12px; }
+.spread-legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); margin: 4px 0; }
+.spread-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; border: 1px solid var(--line); }
+.verdict { margin: 4px 0 2px; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.verdict-icon { font-size: 12px; }
+.verdict.up .verdict-icon { color: var(--accent); }
+.verdict.down .verdict-icon { color: #3890d8; }
+.verdict.flat .verdict-icon, .verdict.none .verdict-icon { color: var(--muted); }
+.verdict.none { color: var(--muted); font-weight: 500; font-size: 13px; }
 #analysis-kind { margin-bottom: 8px; }
 
 /* ------------------------------------------------------------- understanding the map */

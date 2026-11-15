@@ -18,6 +18,7 @@ from app.config import Settings, get_settings
 from app.db import Base, make_engine, make_session_factory
 from app.schemas import IngestRequest
 from app.services.ndvi import CopernicusNdvi
+from app.services.sentinel import CdseStats
 from app.services.pipeline import run_ingest
 
 log = logging.getLogger("firelens")
@@ -68,6 +69,11 @@ def create_app(settings: Settings | None = None, http_transport: httpx.AsyncBase
         app.state.jobs = {}
         app.state.tile_cache = OrderedDict()  # built map tiles, keyed by data version
         app.state.seeding = False
+        app.state.cdse = (
+            CdseStats(app.state.http, settings.copernicus_client_id, settings.copernicus_client_secret)
+            if settings.copernicus_enabled
+            else None
+        )
         app.state.ndvi = (
             CopernicusNdvi(app.state.http, settings.copernicus_client_id, settings.copernicus_client_secret)
             if settings.copernicus_enabled

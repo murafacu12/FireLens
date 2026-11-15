@@ -1,6 +1,7 @@
 // Analysis tab: fire statistics and trends for the area in view and the selected period.
-import { api, type AnalysisSummary, type Params, type SensorComparison } from "./api";
+import { api, type AnalysisSummary, type BaselineGroup, type BaselineVerdict, type LandcoverBreakdown, type Params, type SeasonalBaseline, type SensorComparison } from "./api";
 import { stateLabel } from "./details";
+import { LAND_COLOUR, shareBar } from "./firereport";
 import { $, esc, fmtNum, fmtTime } from "./util";
 
 const W = 312; // plot width in px (the sidebar is fixed-width)
@@ -107,6 +108,8 @@ function render(a: AnalysisSummary): string {
       <div><b>${fmtInt(d.total)}</b><span>fire detections</span>${change(a.previous.detections_change_pct, a.previous.comparable)}</div>
       <div><b>${fmtInt(a.events.started)}</b><span>fire events started</span>${change(a.previous.events_change_pct, a.previous.comparable)}</div>
     </div>
+    <div id="baseline-section"><h3>Compared with past seasons</h3><p class="hint">Looking up past seasons…</p></div>
+    <div id="landcover-section"><h3>What is burning</h3><p class="hint">Reading land cover…</p></div>
     <h3>Detections per day</h3>
     ${LEGEND}
     ${bars(daily, 120, marks)}
@@ -126,6 +129,124 @@ function render(a: AnalysisSummary): string {
     <h3>Strongest fire power</h3>
     <ul class="list">${eventList(a.events.strongest, "frp")}</ul>
     <p class="hint">A detection is one satellite pixel that saw fire on one pass: counts measure observed fire activity, not the number of fires or the area burned. FireLens does not measure burned area.</p>`;
+}
+
+// ---------------------------------------------------------------- seasonal baseline
+
+const VERDICT: Record<BaselineVerdict, { text: string; tone: "up" | "down" | "flat" | "none" }> = {
+  well_above: { text: "Well above normal", tone: "up" },
+  above: { text: "Above normal", tone: "up" },
+  within_range: { text: "Within the normal range", tone: "flat" },
+  below: { text: "Below normal", tone: "down" },
+  well_below: { text: "Well below normal", tone: "down" },
+  insufficient_seasons: { text: "Not enough past seasons", tone: "none" },
+  too_few_fires: { text: "Too few fires to compare", tone: "none" },
+  current_incomplete: { text: "Not comparable yet", tone: "none" },
+  no_archive: { text: "No archive for these dates", tone: "none" },
+  area_not_covered: { text: "No archive for this area yet", tone: "none" },
+};
+
+const BASELINE_WHY: Record<string, string> = {
+  no_baseline: "The seasonal archive has not been built on this server yet.",
+  period_too_short: "It compares whole days (UTC) that ended more than 6 hours ago, and this period has none: choose “7 days” under Filters → Time, or a History range.",
+  area_not_covered: "The archive of past seasons does not cover this area yet (it is being downloaded worldwide; Argentina is ready).",
+  no_archive: "The archive of past seasons does not cover these dates.",
+};
+
+const dayRange = (first: string, last: string) => (first === last ? fmtDay(first) : `${fmtDay(first)} – ${fmtDay(last)}`);
+
+/** One bar per season (oldest first), this period last and highlighted; dashed line at the median. */
+function seasonBars(g: BaselineGroup, n: number): string {
+  const years = [...(g.years ?? [])].sort((a, b) => a.year - b.year);
+  const rows = [...years.map((y) => ({ label: String(y.year), value: y.detections, current: false, first: y.first })),
+    { label: "This year", value: g.current ?? 0, current: true, first: "" }];
+  const H = 130, padL = 34, padB = 16, padT = 14;
+  const plotW = W - padL, plotH = H - padB - padT;
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  const step = plotW / rows.length;
+  const bw = Math.min(34, step - 6);
+  const y = (v: number) => padT + plotH - (v / max) * plotH;
+  const med = g.median ?? 0;
+  const bars = rows.map((r, i) => {
+    const x = padL + i * step + (step - bw) / 2;
+    const tip = r.current
+      ? `This period|${fmtInt(r.value)} detections${g.ratio != null ? `|${fmtNum(g.ratio, 2)}× the median season` : ""}`
+      : `${r.label}|${fmtInt(r.value)} detections|${dayRange(r.first, addDays(r.first, n - 1))}`;
+    return `<g class="bar" data-tip="${esc(tip)}">
+      <rect class="hit" x="${padL + i * step}" y="${padT}" width="${step}" height="${plotH}"/>
+      ${r.value > 0 ? `<rect class="${r.current ? "season-now" : "season"}" x="${x}" y="${y(r.value)}" width="${bw}" height="${y(0) - y(r.value)}" rx="3"/>` : ""}
+      ${r.current ? `<text class="axis val-now" x="${x + bw / 2}" y="${y(r.value) - 4}" text-anchor="middle">${fmtShort(r.value)}</text>` : ""}
+      <text class="axis${r.current ? " now" : ""}" x="${x + bw / 2}" y="${H - 3}" text-anchor="middle">${esc(r.label)}</text>
+    </g>`;
+  }).join("");
+  const grid = [0.5, 1].map((f) => `<line class="grid" x1="${padL}" x2="${W}" y1="${y(max * f)}" y2="${y(max * f)}"/>
+    <text class="axis" x="${padL - 4}" y="${y(max * f) + 3}" text-anchor="end">${fmtShort(max * f)}</text>`).join("");
+  const medLine = `<line class="median" x1="${padL}" x2="${W}" y1="${y(med)}" y2="${y(med)}"/>
+    <text class="axis median-label" x="${padL + 2}" y="${y(med) - 3}">typical ${fmtShort(med)}</text>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Detections per season">${grid}
+    <line class="base" x1="${padL}" x2="${W}" y1="${y(0)}" y2="${y(0)}"/>${bars}${medLine}</svg>`;
+}
+
+function addDays(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function baselineSentence(g: BaselineGroup, days: string): string {
+  const years = (g.years ?? []).map((y) => y.year);
+  const span = years.length ? `${Math.min(...years)}–${Math.max(...years)}` : "";
+  const n = g.seasons;
+  const place = g.rank === 1 ? `more than in any of the ${n} past seasons` : g.rank === n + 1 ? `fewer than in any of the ${n} past seasons` : `${ordinal(g.rank ?? 0)} of ${n + 1} seasons`;
+  return `${fmtInt(g.current ?? 0)} ${esc(g.label)} detections on ${days}: ${place}
+    (${span}: ${fmtInt(g.min ?? 0)}–${fmtInt(g.max ?? 0)}, typical ${fmtInt(Math.round(g.median ?? 0))}${g.ratio != null ? `; ${fmtNum(g.ratio, 2)}× typical` : ""}).`;
+}
+
+function ordinal(k: number): string {
+  const s = k % 100 >= 11 && k % 100 <= 13 ? "th" : (["th", "st", "nd", "rd"][k % 10] ?? "th");
+  return `${k}${s}`;
+}
+
+function renderBaseline(b: SeasonalBaseline): string {
+  if (!b.available || !b.headline) {
+    const why = BASELINE_WHY[b.reason ?? ""] ?? Object.values(b.groups).map((g) => VERDICT[g.verdict]?.text).filter(Boolean)[0] ?? "";
+    return `<h3>Compared with past seasons</h3><p class="hint">${esc(why)}</p>`;
+  }
+  const g = b.groups[b.headline];
+  const other = b.groups[b.headline === "viirs_noaa20" ? "modis" : "viirs_noaa20"];
+  const days = b.days ? dayRange(b.days.first, b.days.last) : "";
+  const v = VERDICT[g.verdict];
+  const cd = g.current_days;
+  const notes = [
+    b.days && b.days.count < 7 ? `Only ${b.days.count} day${b.days.count > 1 ? "s" : ""}: short periods swing a lot from year to year.` : "",
+    g.area_fraction < 0.98 ? `Counted over ${fmtNum(100 * g.area_fraction, 0)}% of the view (whole ${b.cell_deg}° cells the archive covers in every year).` : `Counted over whole ${b.cell_deg}° cells around the view.`,
+    cd && cd.missing ? `${cd.missing} day${cd.missing > 1 ? "s are" : " is"} missing for this period.` : "",
+  ].filter(Boolean).join(" ");
+  const otherLine = other && other.seasons >= 2 && other.current != null
+    ? `<dl class="kv"><dt>${esc(other.label)}</dt><dd>${esc(VERDICT[other.verdict].text)} · ${fmtInt(other.current)} vs typical ${fmtInt(Math.round(other.median ?? 0))}</dd></dl>`
+    : "";
+  return `
+    <h3>Compared with past seasons</h3>
+    <p class="verdict ${v.tone}"><span class="verdict-icon" aria-hidden="true">${v.tone === "up" ? "▲" : v.tone === "down" ? "▼" : v.tone === "flat" ? "●" : "○"}</span>${esc(v.text)}</p>
+    <p class="hint">${baselineSentence(g, days)}</p>
+    ${g.seasons >= 2 ? seasonBars(g, b.days?.count ?? 1) : ""}
+    ${otherLine}
+    <p class="hint">Same calendar days of each year, same satellites every year (${esc(g.label)}; NOAA-21 is left out because it only flies since 2023, and more satellites mean more detections).
+      ${esc(notes)} "Above" or "below" normal means outside the range of every past season.</p>`;
+}
+
+// ---------------------------------------------------------------- what is burning
+
+function renderLandcover(l: LandcoverBreakdown): string {
+  if (!l.detections) return `<h3>What is burning</h3><p class="hint">No detections in this area and period.</p>`;
+  const top = l.classes[0];
+  const rows = l.classes.filter((c) => c.share >= 0.01).slice(0, 6);
+  return `
+    <h3>What is burning</h3>
+    ${top ? `<p class="lead-line">${fmtNum(100 * top.share, 0)}% of detections on <b>${esc(top.label.toLowerCase())}</b>${top.meaning ? ` <small>(${esc(top.meaning)})</small>` : ""}</p>` : ""}
+    ${shareBar(l.classes.map((c) => ({ key: c.class, label: c.label, share: c.share, colour: LAND_COLOUR[c.class] ?? "#777" })), 5)}
+    <dl class="kv">${rows.map((c) => `<dt>${esc(c.label)}</dt><dd>${fmtInt(c.detections)} <small>(${fmtNum(100 * c.share, 0)}%${c.meaning ? ` · ${esc(c.meaning)}` : ""})</small></dd>`).join("")}</dl>
+    <p class="hint">Land cover under each detection's centre (ESA WorldCover 2021, ~150 m).${l.coverage < 1 ? ` Still downloading the map for ${fmtNum(100 * (1 - l.coverage), 0)}% of the detections: run again in a minute.` : ""}</p>`;
 }
 
 // ---------------------------------------------------------------- MODIS vs VIIRS
@@ -224,7 +345,7 @@ let seq = 0;
 export async function runSensors(bbox: [number, number, number, number] | null, time: Params): Promise<void> {
   const box = $("#analysis-body");
   const mine = ++seq;
-  box.innerHTML = `<p class="hint">Comparing MODIS and VIIRS… a continent-sized view takes 10–15 s, a region about 1 s.</p>`;
+  box.innerHTML = `<p class="hint">Comparing MODIS and VIIRS… a continent-sized view takes a few seconds, a region less than one.</p>`;
   try {
     const r = await api.sensors({ ...time, bbox: bbox ? bbox.join(",") : undefined });
     if (mine === seq) box.innerHTML = renderSensors(r);
@@ -240,9 +361,22 @@ export async function runAnalysis(bbox: [number, number, number, number] | null,
   const box = $("#analysis-body");
   const mine = ++seq;
   box.innerHTML = `<p class="hint">Analysing…</p>`;
+  const params = { ...time, bbox: bbox ? bbox.join(",") : undefined };
+  // both requests at once; the seasonal comparison fills its section when it arrives
+  const seasonal = api.baseline(params).then(renderBaseline, (err) =>
+    `<h3>Compared with past seasons</h3><p class="hint">Unavailable: ${esc((err as Error).message)}</p>`);
+  const land = api.landcover(params).then(renderLandcover, (err) =>
+    `<h3>What is burning</h3><p class="hint">Unavailable: ${esc((err as Error).message)}</p>`);
   try {
-    const a = await api.analysis({ ...time, bbox: bbox ? bbox.join(",") : undefined });
-    if (mine === seq) box.innerHTML = render(a);
+    const a = await api.analysis(params);
+    if (mine !== seq) return;
+    box.innerHTML = render(a);
+    const fill = async (id: string, html: Promise<string>) => {
+      const h = await html;
+      const section = document.getElementById(id);
+      if (mine === seq && section) section.innerHTML = h;
+    };
+    await Promise.all([fill("baseline-section", seasonal), fill("landcover-section", land)]);
   } catch (err) {
     if (mine === seq) box.innerHTML = `<p class="banner warn">Analysis failed: ${esc((err as Error).message)}</p>`;
   }

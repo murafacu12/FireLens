@@ -63,10 +63,18 @@ class Settings(BaseSettings):
     cluster_continuity_tolerance_km: float = 0.0
     event_archive_days: float = 30.0  # no detection for this long: lifecycle_state "archived"
 
+    # Seasonal baseline (per-cell daily counts from the FIRMS archive; see app/services/baseline.py).
+    # Default: data/baseline.db at the repository root. Opened read-only by the API.
+    baseline_db_path: str | None = None
+
     # Third-party providers
     open_meteo_url: str = "https://api.open-meteo.com/v1/forecast"
     copernicus_client_id: str | None = None
     copernicus_client_secret: str | None = None
+    # Meteomatics Weather API (https://www.meteomatics.com): historical and forecast weather for the
+    # fire-spread work. Set in .env only; never logged.
+    meteomatics_username: str | None = None
+    meteomatics_password: str | None = None
 
     @property
     def is_demo(self) -> bool:
@@ -83,6 +91,10 @@ class Settings(BaseSettings):
         if self.database_url:
             return self.database_url
         return "sqlite:///./firelens-demo.db" if self.demo_mode else "sqlite:///./firelens.db"
+
+    @property
+    def meteomatics_enabled(self) -> bool:
+        return bool(self.meteomatics_username and self.meteomatics_password)
 
     @property
     def copernicus_enabled(self) -> bool:

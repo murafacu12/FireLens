@@ -25,7 +25,10 @@ import {
   SceneMode,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
+  SingleTileImageryProvider,
   Terrain,
+  TextureMagnificationFilter,
+  TextureMinificationFilter,
   UrlTemplateImageryProvider,
   Viewer,
 } from "cesium";
@@ -518,5 +521,46 @@ export class Globe {
   flyToBox(w: number, s: number, e: number, n: number): void {
     const pad = Math.max(0.05, (n - s) * 0.6, (e - w) * 0.6);
     this.viewer.camera.flyTo({ destination: Rectangle.fromDegrees(w - pad, s - pad, e + pad, n + pad), duration: 1.6 });
+  }
+
+  private spreadLayer: ImageryLayer | null = null;
+  private spreadSeq = 0;
+
+  /** Draw a fire's spread outlook (hour each cell could be reached, 255 = never) as a
+   * translucent image on the ground; null removes it. */
+  async showSpread(grid: { west: number; north: number; step: number; rows: number; cols: number; hours: Uint8Array } | null): Promise<void> {
+    const mine = ++this.spreadSeq;
+    if (this.spreadLayer) {
+      this.viewer.imageryLayers.remove(this.spreadLayer, true);
+      this.spreadLayer = null;
+    }
+    if (!grid) return this.redraw();
+    const canvas = document.createElement("canvas");
+    canvas.width = grid.cols;
+    canvas.height = grid.rows;
+    const ctx = canvas.getContext("2d")!;
+    const img = ctx.createImageData(grid.cols, grid.rows);
+    let r0 = grid.rows, r1 = -1, c0 = grid.cols, c1 = -1; // bounds of the reachable cells
+    for (let i = 0; i < grid.hours.length; i++) {
+      const h = grid.hours[i];
+      if (h === 255) continue;
+      const row = Math.floor(i / grid.cols), col = i % grid.cols;
+      r0 = Math.min(r0, row); r1 = Math.max(r1, row); c0 = Math.min(c0, col); c1 = Math.max(c1, col);
+      const [r, g, b, a] = h === 0 ? [255, 255, 255, 230] : h <= 6 ? [200, 30, 30, 170] : h <= 12 ? [240, 110, 30, 140] : [250, 200, 60, 110];
+      img.data.set([r, g, b, a], i * 4);
+    }
+    ctx.putImageData(img, 0, 0);
+    const south = grid.north - grid.rows * grid.step, east = grid.west + grid.cols * grid.step;
+    const provider = await SingleTileImageryProvider.fromUrl(canvas.toDataURL(), { rectangle: Rectangle.fromDegrees(grid.west, south, east, grid.north) });
+    if (mine !== this.spreadSeq) return; // superseded while loading
+    this.spreadLayer = this.viewer.imageryLayers.addImageryProvider(provider);
+    // sharp cells: smoothing would blur the zone edges into the satellite image
+    this.spreadLayer.magnificationFilter = TextureMagnificationFilter.NEAREST;
+    this.spreadLayer.minificationFilter = TextureMinificationFilter.NEAREST;
+    if (r1 >= 0) {
+      // frame the zone the fire could reach (the cells hug the front: from far away they vanish)
+      this.flyToBox(grid.west + c0 * grid.step, grid.north - (r1 + 1) * grid.step, grid.west + (c1 + 1) * grid.step, grid.north - r0 * grid.step);
+    }
+    this.redraw();
   }
 }

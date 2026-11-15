@@ -3,6 +3,7 @@ import "./styles.css";
 import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health, type Params } from "./api";
 import { runAnalysis, runSensors, wireAnalysis } from "./analysis";
 import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
+import { setSpreadDrawer } from "./firereport";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { helpButton, mountGuide, mountLegend, showMapTip, wireHelp } from "./guide";
 import { revealMap, wireLayout } from "./layout";
@@ -863,6 +864,7 @@ async function loadHealth(): Promise<void> {
 wireDetails((id) => void openEvent(id));
 wireHelp();
 wireLayout(() => globe.resize());
+setSpreadDrawer((grid) => void globe.showSpread(grid));
 mountLegend($("#globe"));
 mountGuide($("#globe"), $("#guide-open"));
 globe.onHover(showMapTip);

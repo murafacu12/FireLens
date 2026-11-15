@@ -13,12 +13,13 @@ What the numbers mean (and don't):
   period reports how much of it is loaded (`coverage`).
 """
 
+import heapq
 import math
 import statistics
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import DateTime, Integer, cast, func, literal_column, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import DetectionRow, EventRow, FireCellRow
@@ -49,11 +50,14 @@ def _hourly(session: Session, bbox: BBox, h0: int, h1: int) -> tuple[dict, str]:
     width, height = _span(bbox)
     w, s, e, n = bbox
     if max(width, height) <= RAW_MAX_SPAN_DEG:
+        # `acq_hour + 0`: keep SQLite on the (latitude, longitude) index. Left to itself it picks the
+        # acq_hour index and reads the whole world's detections of the period (124 ms vs 3.5 ms, 30 days)
+        hour = DetectionRow.acq_hour + 0
         stmt = select(
             DetectionRow.acq_hour, DetectionRow.instrument, DetectionRow.confidence_level, func.count(),
             func.coalesce(func.sum(DetectionRow.frp_mw), 0.0), func.coalesce(func.max(DetectionRow.frp_mw), 0.0),
         ).where(
-            DetectionRow.acq_hour >= h0, DetectionRow.acq_hour <= h1, DetectionRow.static_kind.is_(None),
+            hour >= h0, hour <= h1, DetectionRow.static_kind.is_(None),
             DetectionRow.latitude >= s, DetectionRow.latitude <= n,
             or_(*[(DetectionRow.longitude >= a) & (DetectionRow.longitude <= b) for a, b in _lon_ranges(w, e)]),
         ).group_by(DetectionRow.acq_hour, DetectionRow.instrument, DetectionRow.confidence_level)
@@ -88,10 +92,24 @@ def _hourly(session: Session, bbox: BBox, h0: int, h1: int) -> tuple[dict, str]:
     return out, f"cells_{c:g}"
 
 
+WIDE_EVENT_AREA_DEG2 = 2500.0  # larger than this (~4 % of the map), events are found by time first (see _events_where)
+
+
 def _events_where(stmt, bbox: BBox, t0: datetime, t1: datetime):
     w, s, e, n = bbox
+    width, height = _span(bbox)
+    # Steer SQLite's index choice, which it gets wrong both ways without statistics: a wide area keeps
+    # most events, so it is read by time (start_at index; ~1.6x faster worldwide); a small one by
+    # place (lat/lon index; 0.8 ms instead of 150 ms for 30 days). A unary `+` hides a column's index.
+    lat, start = EventRow.latitude, EventRow.start_at
+    if width * height > WIDE_EVENT_AREA_DEG2:
+        lat = EventRow.latitude + 0
+    else:
+        start = literal_column(f"+{EventRow.__tablename__}.start_at", DateTime)
+    if bbox == WORLD:
+        return stmt.where(EventRow.start_at >= t0, EventRow.start_at < t1)
     return stmt.where(
-        EventRow.start_at >= t0, EventRow.start_at < t1, EventRow.latitude >= s, EventRow.latitude <= n,
+        start >= t0, start < t1, lat >= s, lat <= n,
         or_(*[(EventRow.longitude >= a) & (EventRow.longitude <= b) for a, b in _lon_ranges(w, e)]),
     )
 
@@ -134,19 +152,23 @@ def analyze(session: Session, bbox: BBox | None, start: datetime, end: datetime,
     total = sum(b["detections"] for b in by_sensor.values())
     prev_total = sum(v[0] for v in previous.values())
 
-    # ---- events that started in the period
-    ev_rows = session.execute(_events_where(
-        select(EventRow.start_at, EventRow.evidence, EventRow.lifecycle_state), bbox, t0, t1)).all()
-    ev_daily: Counter = Counter((r.start_at.date() - EPOCH).days for r in ev_rows)
+    # ---- events that started in the period: one read of the few columns needed for the counts and
+    # both top-5 lists (tens of thousands of rows worldwide); full rows only for the ten shown
+    day_no = cast(func.julianday(func.date(EventRow.start_at)) - 2440587.5, Integer)  # days since 1970-01-01
+    ev_rows = session.connection().execute(_events_where(
+        select(EventRow.id, day_no, EventRow.evidence, EventRow.lifecycle_state, EventRow.area_km2, EventRow.peak_pass_frp_mw),
+        bbox, t0, t1)).all()
+    ev_daily: Counter = Counter(r[1] for r in ev_rows)
     prev_events = session.scalar(_events_where(
         select(func.count()).select_from(EventRow), bbox, t0 - timedelta(hours=n_hours), t0)) or 0
+    top_ids = {col: [r[0] for r in heapq.nlargest(5, ev_rows, key=lambda r: r[col] or 0.0)] for col in (4, 5)}
+    full = {r.id: r for r in session.scalars(select(EventRow).where(EventRow.id.in_({i for ids in top_ids.values() for i in ids})))}
 
-    def top(order) -> list[dict]:
-        rows = session.scalars(_events_where(select(EventRow), bbox, t0, t1).order_by(order.desc()).limit(5))
-        return [FireEvent.model_validate(r).model_dump(mode="json", include={
+    def top(col: int) -> list[dict]:
+        return [FireEvent.model_validate(full[i]).model_dump(mode="json", include={
             "id", "latitude", "longitude", "start_at", "end_at", "area_km2", "area_basis", "peak_pass_frp_mw",
             "peak_pass_sensor", "detection_count", "lifecycle_state", "status", "evidence", "west", "south", "east", "north"})
-            for r in rows]
+            for i in top_ids[col]]
 
     # ---- daily series (zero-filled), trend inside the period, unusual days
     first_day, last_day = h0 // 24, h1 // 24
@@ -211,10 +233,10 @@ def analyze(session: Session, bbox: BBox | None, start: datetime, end: datetime,
         },
         "events": {
             "started": len(ev_rows),
-            "by_evidence": dict(Counter(r.evidence for r in ev_rows)),
-            "by_lifecycle": dict(Counter(r.lifecycle_state for r in ev_rows)),
-            "largest_footprint": top(EventRow.area_km2),
-            "strongest": top(EventRow.peak_pass_frp_mw),
+            "by_evidence": dict(Counter(r[2] for r in ev_rows)),
+            "by_lifecycle": dict(Counter(r[3] for r in ev_rows)),
+            "largest_footprint": top(4),
+            "strongest": top(5),
         },
         "previous": {
             "start": (t0 - timedelta(hours=n_hours)).replace(tzinfo=UTC), "end": t0.replace(tzinfo=UTC),
