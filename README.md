@@ -6,6 +6,8 @@ VIIRS** active-fire data (NASA FIRMS as the base reference), groups detections i
 a historical fire calendar, alert rules and a fire-danger forecast (Open-Meteo weather,
 Copernicus Sentinel-2 NDVI).
 
+- **[docs/FIRELENS_DOCUMENTATION.md](docs/FIRELENS_DOCUMENTATION.md): the complete documentation**
+  (features, usage, architecture, API, data, limits, changelog, roadmap)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): components, data flow, roadmap
 - [docs/DATA_HARMONIZATION.md](docs/DATA_HARMONIZATION.md): how MODIS and VIIRS become one model
 
@@ -41,7 +43,7 @@ Demo and live data use separate databases (`firelens-demo.db`, `firelens.db`) an
 - **Latest**: a rolling window back from now (24 h, 48 h or 7 days). It shows how old the newest
   satellite pass is (NASA publishes about 3 h after the overpass), refreshes itself every 5 minutes,
   and has a button to pull the newest NASA data immediately.
-- **History**: pick a day or a range (‹ › step through days; or click a day in the Calendar). FireLens
+- **History**: pick a day or a range (‹ › step through days; or click a day, or drag across several, in the Calendar). FireLens
   records which days and areas it has loaded (`GET /api/history/coverage`). If the selected days
   aren't loaded for the area in view, it loads them from the NASA archive automatically, for views
   under 60° across and up to 31 days. This needs a MAP_KEY; each day costs one request per satellite.
@@ -81,7 +83,7 @@ Interactive docs at http://localhost:8000/docs.
 | `GET /api/detections/compact` | Same filters, columnar arrays (`id, lat, lon, frp, conf, viirs, t`) for map rendering. About 10x smaller, gzipped |
 | `GET /api/detections/{id}` | One full detection (loaded when a point is clicked) |
 | `GET /api/events` | Fire events. Filters: time overlap, area, `min_area`/`max_area`, `min_frp`, `min_detections`, `status`, `lifecycle_state`, `min_evidence`, `instrument`, `sort=recent\|area\|frp` |
-| `GET /api/events/{id}` | Event with all its detections. An id that was merged or renamed resolves to the current event (`resolved_from`) |
+| `GET /api/events/{id}` | Event with all its detections and its `perimeter` (outline of the detected footprint). An id that was merged or renamed resolves to the current event (`resolved_from`) |
 | `GET /api/events/{id}/timeline` | Whole-fire FRP per satellite overpass (MODIS and VIIRS kept apart) |
 | `GET /api/events/{id}/history`, `/lineage` | Every recorded change (created, grown, state, merged, split, renamed) and where ids went |
 | `GET /api/calendar` | Daily detections / new events / FRP (`start`, `end`, optional area) |

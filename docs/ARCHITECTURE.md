@@ -1,5 +1,7 @@
 # FireLens architecture
 
+The complete, up-to-date documentation is [FIRELENS_DOCUMENTATION.md](FIRELENS_DOCUMENTATION.md).
+
 ## Goal
 
 A visual, more precise successor to NASA FIRMS. It offers harmonized MODIS + VIIRS
@@ -60,8 +62,9 @@ It is deliberately simple and explainable, and it's the baseline an ML model mus
 * CesiumJS without an ion token by default: Esri World Imagery, OSM, and NASA GIBS **VIIRS NOAA-20 daily true colour** (date-selectable) as base layers. **VIIRS NDVI 8-day** is an overlay. `VITE_CESIUM_ION_TOKEN` turns on 3D world terrain.
 * **Progressive rendering by zoom level** (`tiles.ts`): the globe draws fixed tiles. Zoomed out, each tile is a 16 × 16 grid of grouped markers read from the server's pyramid. Each zoom step halves the cell size. From ~300 km altitude, ~150 km tiles carry the individual detections and fire events. Moving or zooming requests only tiles never loaded for the current filters. A zoom change keeps the old tiles on screen until the new ones have all arrived. Toggling MODIS/VIIRS redraws from memory, because tiles carry the two sensors separately. See [DATABASE.md](DATABASE.md#caching-and-the-only-load-what-changed-rule).
 * Detections use a `PointPrimitiveCollection` per tile. Colour shows FRP on a log scale. The outline shows the sensor (white = VIIRS, dark = MODIS).
-* Events are circles sized by footprint area, coloured by status.
-* Tabs: Filters · Layers · Calendar (monthly heat map → that day's fires) · Alerts (rule from current view or point+radius).
+* Events are circles sized by footprint area, coloured by status. An opened fire also shows its perimeter (outline of the detected footprint, `services/perimeter.py`).
+* Tabs: Filters · Layers · Analysis · Calendar (26-week heatmap, world or area, click or drag a period) · Alerts · Guide. Simple and Advanced views, English and Spanish.
+* 3D and 2D: the 2D view box is computed from the camera (Cesium swaps west and east past half the world), and fires reload after a 3D/2D switch.
 
 ## Roadmap
 
@@ -69,4 +72,4 @@ It is deliberately simple and explainable, and it's the baseline an ML model mus
 2. **More sources**: GOES/Himawari geostationary fire products (10-minute revisit), Landsat/Sentinel-2 active fire, MCD64A1 burned area, Sentinel-2 dNBR burn severity, ERA5 / Open-Meteo history, land cover (ESA WorldCover) as fuel type.
 3. **Prediction**: build a training set (detections × weather × NDVI × land cover × terrain), then a gradient-boosted ignition/spread probability per grid cell, validated against held-out seasons. Expose it as a risk raster layer on the globe.
 4. **Alerts**: email/Telegram/WhatsApp channels, user accounts, per-user zones, quiet hours.
-5. **Globe**: time-slider animation (Cesium clock), 3D smoke plumes, event perimeter polygons (concave hull).
+5. **Globe**: time-slider animation (Cesium clock), 3D smoke plumes, perimeters for every fire on the map (done for the opened fire).

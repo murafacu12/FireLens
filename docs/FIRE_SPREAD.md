@@ -75,8 +75,9 @@ paired bootstrap):
 | 2 | 39.8 km² | 65.7% | 69.8% | 71.3% | −5.6 pts (−9.3 … −2.0) |
 
 **Verdict:** the model never beats the circle, and at the larger zones it is significantly worse.
-Under the rule above it stays out of the app: `spread.ENABLED = False`, the API answers 404 and
-the button is hidden. The code and the backtest are kept.
+Under the rule above it would stay out of the app. It was later **enabled at the owner's request
+as experimental** (`spread.ENABLED = True`): the button and every outlook carry the label
+"Experimental", the measured hit rate, and a note that it is never a safe zone.
 
 **Why** (diagnosed on the same 300 fires):
 - **Weak wind effect in this sample.** 57.7% of new detections lie downwind (within 90° of where
