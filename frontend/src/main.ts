@@ -1,7 +1,7 @@
 import "./styles.css";
 
 import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health, type Params } from "./api";
-import { runAnalysis, wireAnalysis } from "./analysis";
+import { runAnalysis, runSensors, wireAnalysis } from "./analysis";
 import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
@@ -523,9 +523,18 @@ function describeAnalysisScope(): void {
   $("#analysis-scope").textContent = `Period: ${period} (change it under Filters → Time). Area: what the globe shows when you press the button.`;
 }
 
+let analysisKind: "stats" | "sensors" = "stats";
+$("#analysis-kind").addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-kind]");
+  if (!btn) return;
+  analysisKind = btn.dataset.kind as typeof analysisKind;
+  document.querySelectorAll("#analysis-kind button").forEach((b) => b.classList.toggle("active", b === btn));
+  $("#analysis-body").innerHTML = "";
+});
 $("#analysis-run").addEventListener("click", () => {
   describeAnalysisScope();
-  void runAnalysis(globe.visibleBbox(), analysisTime());
+  const run = analysisKind === "stats" ? runAnalysis : runSensors;
+  void run(globe.visibleBbox(), analysisTime());
 });
 wireAnalysis((id) => void openEvent(id));
 

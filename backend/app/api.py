@@ -33,7 +33,7 @@ from app.schemas import (
     IngestReport,
     IngestRequest,
 )
-from app.services import analysis, cells, queries
+from app.services import analysis, cells, queries, sensor_compare
 from app.services.ndvi import CopernicusNdvi, NdviResult
 from app.services.alerts import deliver_webhooks, evaluate_rules
 from app.services.coverage import day_status
@@ -353,7 +353,65 @@ def analysis_summary(
         end = end.replace(tzinfo=UTC)
     if end <= start or (end - start).days > analysis.MAX_DAYS:
         raise HTTPException(422, f"period must be positive and at most {analysis.MAX_DAYS} days")
-    return analysis.analyze(session, box, start, end, assume_loaded=settings.is_demo)
+    return _cached(session, ("summary", box, start, end, settings.is_demo),
+                   lambda: analysis.analyze(session, box, start, end, assume_loaded=settings.is_demo))
+
+
+ANALYSIS_CACHE_MAX = 64
+_analysis_cache: OrderedDict = OrderedDict()
+
+
+def _cached(session: Session, key: tuple, compute):
+    """Analysis results stay valid until new data arrives (data_version), like the map tiles."""
+    full = (cells.data_version(session), *key)
+    with _tile_lock:
+        if full in _analysis_cache:
+            _analysis_cache.move_to_end(full)
+            return _analysis_cache[full]
+    result = compute()
+    with _tile_lock:
+        _analysis_cache[full] = result
+        while len(_analysis_cache) > ANALYSIS_CACHE_MAX:
+            _analysis_cache.popitem(last=False)
+    return result
+
+
+def _analysis_period(hours: int | None, start: datetime | None, end: datetime | None) -> tuple[datetime, datetime]:
+    if hours:
+        end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        start = end - timedelta(hours=hours)
+    if start is None or end is None:
+        raise HTTPException(422, "give hours, or start and end")
+    start = start if start.tzinfo else start.replace(tzinfo=UTC)
+    end = end if end.tzinfo else end.replace(tzinfo=UTC)
+    if end <= start or (end - start).days > analysis.MAX_DAYS:
+        raise HTTPException(422, f"period must be positive and at most {analysis.MAX_DAYS} days")
+    return start, end
+
+
+@router.get("/analysis/sensors")
+def analysis_sensors(
+    session: SessionDep,
+    bbox: Annotated[str | None, Query(description="west,south,east,north; omit for the whole world")] = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    hours: Annotated[int | None, Query(ge=1, le=24 * 400)] = None,
+    window_minutes: Annotated[int, Query(ge=15, le=240, description="max time between coincident MODIS and VIIRS views")] = sensor_compare.DEFAULT_WINDOW_MIN,
+):
+    """MODIS (Aqua) vs VIIRS on coincident observations: detection agreement inside scenes both sensors
+    imaged, FRP of coincident fire clusters, which sensor saw fire events first, and a VIIRS-vs-VIIRS
+    baseline (NOAA-20 vs NOAA-21) for the disagreement time and geolocation alone produce."""
+    try:
+        box = queries.parse_bbox(bbox)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    t0, t1 = _analysis_period(hours, start, end)
+    margin = timedelta(minutes=window_minutes)
+    n = sensor_compare.count_rows(session, box or (-180.0, -90.0, 180.0, 90.0), sensor_compare._naive_utc(t0 - margin), sensor_compare._naive_utc(t1 + margin))
+    if n > sensor_compare.MAX_ROWS:
+        raise HTTPException(422, f"{n:,} detections in this area and period (max {sensor_compare.MAX_ROWS:,}): zoom in or shorten the period")
+    return _cached(session, ("sensors", box, t0, t1, window_minutes),
+                   lambda: sensor_compare.analyze(session, box, t0, t1, window_minutes))
 
 
 # ---------------------------------------------------------------------------- analysis export

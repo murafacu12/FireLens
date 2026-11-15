@@ -216,3 +216,13 @@ table.risk td { padding: 4px; border-bottom: 1px solid var(--line); }
 .chart-tip b { display: block; margin-bottom: 2px; }
 .chart-tip div { color: var(--muted); font-variant-numeric: tabular-nums; }
 #tab-analysis h3 small { text-transform: none; letter-spacing: 0; }
+
+.chart .track { fill: var(--panel-2); }
+.chart .agree { fill: #9a6fd8; }
+.chart .baseline { fill: url(#hatch); stroke: var(--muted); stroke-width: 1; }
+.chart .lbl { fill: var(--text); font-size: 11px; }
+.chart .val { fill: var(--text); font-size: 11px; }
+.chart .dot { fill: #9a6fd8; stroke: var(--panel); stroke-width: 1; }
+.chart .identity { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.chart .id-label { font-style: italic; }
+#analysis-kind { margin-bottom: 8px; }

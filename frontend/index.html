@@ -156,6 +156,10 @@
         </section>
 
         <section id="tab-analysis" class="panel">
+          <div class="segmented" id="analysis-kind" role="tablist">
+            <button type="button" class="active" data-kind="stats">Statistics</button>
+            <button type="button" data-kind="sensors">MODIS vs VIIRS</button>
+          </div>
           <p class="hint" id="analysis-scope"></p>
           <div class="actions"><button type="button" id="analysis-run">Analyse the area in view</button></div>
           <div id="analysis-body"></div>

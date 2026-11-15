@@ -186,6 +186,52 @@ export interface AnalysisSummary {
   time_of_day: { basis: "local_solar" | "utc"; utc_offset_hours: number; hours: { hour: number; viirs: number; modis: number }[] };
 }
 
+interface CompareSide {
+  label: string;
+  detections: number;
+  in_scenes: number;
+  matched: number;
+  matched_pct: number | null;
+  by_confidence: Record<"high" | "nominal" | "low", { in_scenes: number; matched: number; matched_pct: number | null }>;
+  median_frp_matched_mw: number | null;
+  median_frp_unmatched_mw: number | null;
+  by_satellite: Record<string, number>;
+}
+interface Comparison {
+  a: CompareSide;
+  b: CompareSide;
+  satellite_pairs: { a: string; b: string; coincident_pass_pairs: number; median_minutes_apart: number }[];
+  clusters: {
+    count: number;
+    median_frp_ratio_b_over_a: number | null;
+    ratio_p25: number | null;
+    ratio_p75: number | null;
+    median_minutes_apart: number | null;
+    points: { frp_a: number; frp_b: number; pixels_a: number; pixels_b: number; minutes_apart: number; sat_a: string; sat_b: string; lat: number; lon: number }[];
+  };
+}
+
+/** GET /api/analysis/sensors: MODIS vs VIIRS on coincident observations. */
+export interface SensorComparison {
+  bbox: number[];
+  start: string;
+  end: string;
+  window_minutes: number;
+  scene_km: number;
+  match_tolerance_km: number;
+  terra_detections_excluded: number;
+  modis_vs_viirs: Comparison;
+  baseline_viirs_vs_viirs: Comparison | null;
+  events: {
+    started: number;
+    both: number;
+    viirs_only: number;
+    modis_only: number;
+    first_seen_by: { viirs?: number; modis?: number; same_time?: number };
+    median_modis_minus_viirs_hours: number | null;
+  };
+}
+
 export interface FireEventDetail extends FireEvent {
   detections: FireDetection[];
   resolved_from: string | null; // the id asked for, when it was merged/renamed into this event
@@ -372,6 +418,7 @@ export const api = {
   health: () => request<Health>("/api/health"),
   tilesMeta: () => request<TileMeta>("/api/tiles/meta"),
   analysis: (p: Params) => request<AnalysisSummary>(`/api/analysis/summary${query(p)}`),
+  sensors: (p: Params) => request<SensorComparison>(`/api/analysis/sensors${query(p)}`),
   tile,
   detections: (p: Params) => request<FireDetection[]>(`/api/detections${query(p)}`),
   detectionsCompact: (p: Params) => request<CompactDetections>(`/api/detections/compact${query(p)}`),

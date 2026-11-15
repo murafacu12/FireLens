@@ -74,6 +74,7 @@ Interactive docs at http://localhost:8000/docs.
 |---|---|
 | `GET /api/tiles/{cells\|points}/{z}/{x}/{y}` | Map tiles by zoom level: grouped markers per sensor (z 0–7) or individual detections + events (z 7). Same filters plus `hours` (rolling window). ETag + 304 |
 | `GET /api/analysis/summary` | Fire statistics and trends for an area and period (`bbox`, `hours` or `start`/`end`). See [docs/ANALYSIS_ENGINE.md](docs/ANALYSIS_ENGINE.md) |
+| `GET /api/analysis/sensors` | MODIS vs VIIRS on coincident observations: agreement, FRP of the same fire, a VIIRS-vs-VIIRS baseline. See [docs/SENSOR_COMPARISON.md](docs/SENSOR_COMPARISON.md) |
 | `GET /api/tiles/meta` | `data_version` and current hour: when the map's tiles go stale |
 | `GET /api/export/{modis\|viirs}.csv` | One sensor's detections with its native field names (`start`, `end`, `bbox`) |
 | `GET /api/detections` | Harmonized pixels. Filters: `start`, `end`, `bbox=w,s,e,n`, `lat`+`lon`+`radius_km`, `instrument`, `satellite`, `min_confidence`, `min_frp`, `max_frp`, `daynight`, `event_id` |

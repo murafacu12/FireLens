@@ -45,4 +45,6 @@ It is read-only and adds no tables: it reads the map pyramid (`fire_cells`), `de
 * No baseline from previous years yet, so "unusual" is relative to the selected period only.
 * The worldwide database only goes back as far as it has been loaded; before 14 Nov 2026 it held
   South America only.
-* About 1 s per request on the current database; results are not cached.
+* About 1 s per request on the current database. Results are cached until new data arrives.
+
+The second analysis, MODIS vs VIIRS, is described in [SENSOR_COMPARISON.md](SENSOR_COMPARISON.md).
