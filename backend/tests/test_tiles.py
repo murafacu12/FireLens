@@ -218,8 +218,11 @@ def test_tiles_revalidate_with_etag_and_follow_filters(client):
     raw = client.get(url, params={"hours": 24 * 400, "min_frp": 0}).json()  # forces the raw path
     assert raw["viirs_total"] == body["viirs_total"] and raw["cells"]["c"] == body["cells"]["c"]
     ev = client.get("/api/events", params={"sort": "area", "limit": 1, "bbox": "-67.5,-45,-45,-22.5"}).json()[0]
-    near = client.get(url, params={"hours": 24 * 400, "lat": ev["latitude"], "lon": ev["longitude"], "radius_km": 60}).json()
-    assert 0 < near["viirs_total"] + near["modis_total"] < body["viirs_total"] + body["modis_total"]
+    total = body["viirs_total"] + body["modis_total"]
+    near = client.get(url, params={"hours": 24 * 400, "lat": ev["latitude"], "lon": ev["longitude"], "radius_km": 5}).json()
+    assert 0 < near["viirs_total"] + near["modis_total"] < total  # a small radius keeps only the fire's surroundings
+    empty = client.get(url, params={"hours": 24 * 400, "lat": -44.5, "lon": -67.0, "radius_km": 5}).json()  # Patagonian steppe
+    assert empty["viirs_total"] + empty["modis_total"] == 0
 
 
 def test_point_tiles_and_bad_tiles(client):

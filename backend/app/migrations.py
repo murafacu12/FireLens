@@ -90,6 +90,12 @@ def pending_upgrade(engine: Engine) -> list[str]:
     for table, column, _ in ADDED_COLUMNS:
         if table in tables and column not in {c["name"] for c in insp.get_columns(table)}:
             reasons.append(f"add column {table}.{column}")
+    if "acq_hour" in {c["name"] for c in insp.get_columns("detections")}:
+        with engine.connect() as conn:
+            missing = conn.execute(text("SELECT count(*) FROM detections WHERE acq_hour IS NULL")).scalar()
+        if missing:
+            reasons.append(f"fill acq_hour for {missing} detections (stored by older code)")
+            reasons.append("rebuild map pyramid for those hours")
     if meta.get("events_version") != EVENTS_VERSION:
         reasons.append(f"rebuild fire events v{meta.get('events_version', '?')} -> v{EVENTS_VERSION}")
     if meta.get("cells_version") != CELLS_VERSION:
@@ -118,8 +124,10 @@ def add_missing_columns(engine: Engine) -> list[str]:
             if column not in {c["name"] for c in insp.get_columns(table)}:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
                 added.append(f"{table}.{column}")
-        if "detections.acq_hour" in added:
-            conn.execute(text(f"UPDATE detections SET acq_hour = {_hour_sql(engine)}"))
+        # Every upgrade fills missing hours, not only the one that adds the column: code older than
+        # the pyramid (e.g. after a rollback) stores rows without it, and they must not vanish from
+        # the map when the database is upgraded again.
+        conn.execute(text(f"UPDATE detections SET acq_hour = {_hour_sql(engine)} WHERE acq_hour IS NULL"))
         existing = {i["name"] for i in inspect(conn).get_indexes("detections")}
         for name, table, cols in ADDED_INDEXES:
             if name not in existing:
@@ -182,7 +190,11 @@ def backfill_static_kind(session: Session) -> None:
 
 
 def upgrade(engine: Engine, session_factory, settings) -> None:
-    added = add_missing_columns(engine)
+    filled_hours = 0
+    if "acq_hour" in {c["name"] for c in inspect(engine).get_columns("detections")}:
+        with engine.connect() as conn:
+            filled_hours = conn.execute(text("SELECT count(*) FROM detections WHERE acq_hour IS NULL")).scalar() or 0
+    added = add_missing_columns(engine)  # also fills missing acq_hour
     if added:
         log.info("schema upgraded: added %s", ", ".join(added))
     create_views(engine)
@@ -200,7 +212,8 @@ def upgrade(engine: Engine, session_factory, settings) -> None:
         if session.get(AppMetaRow, "events_version") is None or rebuilt_events:
             mark_events_current(session)  # a fresh database is current by definition
         # after the events: rebuilding them can flag gas flares, which the cells count separately
-        if rebuilt_events or _meta(session, "cells_version") != CELLS_VERSION:
+        hours_filled = filled_hours > 0
+        if rebuilt_events or hours_filled or _meta(session, "cells_version") != CELLS_VERSION:
             from app.services.cells import bump_data_version, rebuild_all_cells
 
             t = time.time()

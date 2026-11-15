@@ -174,6 +174,26 @@ def real_run(label: str, dets, scratch: Path, params: dict, measure_memory: bool
     return out
 
 
+def memory_run(label: str, dets, scratch: Path, params: dict) -> dict:
+    """Peak Python memory of the hourly refresh and of a full rebuild (tracemalloc, untimed)."""
+    newest = max(d.acquired_at for d in dets)
+    now = newest + timedelta(hours=1)
+    _, factory = fresh_db(scratch / f"bench_{label}_mem.db")
+    ingest(factory, [d for d in dets if d.acquired_at < newest - timedelta(hours=2)], params, now)
+    gc.collect()
+    tracemalloc.start()
+    ingest(factory, [d for d in dets if d.acquired_at >= newest - timedelta(hours=24)], params, now)
+    out = {"hourly_peak_mb": round(tracemalloc.get_traced_memory()[1] / 1e6, 1)}
+    tracemalloc.reset_peak()
+    with factory() as s:
+        rebuild_all_events(s, **params)
+        out["full_rebuild_peak_mb"] = round(tracemalloc.get_traced_memory()[1] / 1e6, 1)
+        s.rollback()
+    tracemalloc.stop()
+    log(f"[{label}] memory {out}")
+    return out
+
+
 def migrate_rehearsal(v2_db: Path, scratch: Path) -> dict:
     copy = scratch / "migration_rehearsal.db"
     for f in scratch.glob("migration_rehearsal.db*"):
@@ -229,6 +249,12 @@ def equivalence(label: str, dets) -> dict:
 
 def main() -> None:
     csv_dir, scratch = Path(sys.argv[1]), Path(sys.argv[2])
+    if "--world-memory-only" in sys.argv:  # just the worldwide memory figures (long, untimed)
+        world = load_csvs(csv_dir)
+        res = {"old": memory_run("world_old", world, scratch, OLD), "new": memory_run("world_new", world, scratch, NEW)}
+        (scratch / "clustering_benchmark_memory.json").write_text(json.dumps(res, indent=2))
+        log("done")
+        return
     log("== A. synthetic scenarios (ground truth by construction)")
     synthetic()
     log("== B. central Africa, both rules")
@@ -248,6 +274,11 @@ def main() -> None:
         RESULTS["world"] = {"old": real_run("world_old", world, scratch, OLD, False),
                             "new": real_run("world_new", world, scratch, NEW, False)}
         RESULTS["equivalence"]["world"] = equivalence("world", world)
+        del world
+    if "--world-memory" in sys.argv:
+        log("== C2. worldwide memory, both rules")
+        world = load_csvs(csv_dir)
+        RESULTS["world_memory"] = {"old": memory_run("world_old", world, scratch, OLD), "new": memory_run("world_new", world, scratch, NEW)}
         del world
     if "--migrate" in sys.argv:
         log("== D. migration at worldwide scale, on a copy of a v2 benchmark database")

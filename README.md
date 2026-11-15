@@ -93,7 +93,7 @@ Interactive docs at http://localhost:8000/docs.
 | `GET /api/history/countries` | Countries loadable by name (mapped to bounding boxes) |
 
 Database layout, zoom pyramid and caching: [docs/DATABASE.md](docs/DATABASE.md).
-Fire events: [model](docs/FIRE_EVENT_MODEL.md) · [algorithm](docs/CLUSTERING_ALGORITHM.md) · [audit](docs/FIRE_CLUSTERING_AUDIT.md) · [benchmarks](docs/CLUSTERING_BENCHMARKS.md) · [limitations](docs/CLUSTERING_LIMITATIONS.md) · [migration v3](docs/MIGRATION_V3.md).
+Fire events: [model](docs/FIRE_EVENT_MODEL.md) · [algorithm](docs/CLUSTERING_ALGORITHM.md) · [audit](docs/FIRE_CLUSTERING_AUDIT.md) · [benchmarks](docs/CLUSTERING_BENCHMARKS.md) · [limitations](docs/CLUSTERING_LIMITATIONS.md) · [migration v3](docs/MIGRATION_V3.md) · [release report](docs/RELEASE_V3.md).
 
 ## Tests
 

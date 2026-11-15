@@ -348,3 +348,40 @@ def test_event_across_the_antimeridian_has_sane_geometry(factory):
         b.front("A", -17.0, -179.99, 100, "NOAA-20", 3)
         ingest(s, b.dets)
         assert s.scalar(select(func.count()).select_from(EventRow)) == 1
+
+
+def test_roll_forward_after_rollback_fills_hours_older_code_left_empty(tmp_path):
+    """Rollback scenario: v2-era code ingests rows without acq_hour; upgrading again must put them
+    on the map (pyramid) and in events, and the guard must ask before doing it."""
+    from sqlalchemy import text
+
+    from app.migrations import SchemaUpgradeRequired, guard, upgrade
+    from app.models import FireCellRow
+    from app.services import cells
+
+    db = tmp_path / "rolled_back.db"
+    engine = make_engine(f"sqlite:///{db}")
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+
+    class S:
+        cluster_tolerance_km, cluster_max_gap_hours, event_active_hours = 1.0, 24.0, 24.0
+
+    with factory() as s:
+        upsert_detections(s, sc.expanding().detections)
+        s.commit()
+    with engine.begin() as conn:  # production shape: acq_hour was added later by ALTER TABLE (nullable)
+        conn.execute(text("DROP INDEX ix_detections_acq_hour"))
+        conn.execute(text("DROP INDEX ix_detections_instrument_hour"))
+        conn.execute(text("ALTER TABLE detections DROP COLUMN acq_hour"))
+    upgrade(engine, factory, S())  # a current v3 database
+    with engine.begin() as conn:  # older code stores two more rows, without an hour
+        conn.execute(text("UPDATE detections SET acq_hour = NULL WHERE id IN (SELECT id FROM detections ORDER BY id LIMIT 2)"))
+    with pytest.raises(SchemaUpgradeRequired, match="fill acq_hour for 2 detections"):
+        guard(engine, allowed=False)
+    upgrade(engine, factory, S())
+    with factory() as s:
+        assert s.scalar(select(func.count()).select_from(DetectionRow).where(DetectionRow.acq_hour.is_(None))) == 0
+        n_level4 = s.scalar(select(func.sum(FireCellRow.n)).where(FireCellRow.level == cells.MIN_LEVEL))
+        assert n_level4 == len(sc.expanding().detections)  # every row is on the map again
+    assert guard(engine, allowed=False) == []

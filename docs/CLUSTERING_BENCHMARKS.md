@@ -75,8 +75,8 @@ result.
 | Hourly refresh: event rebuild | 4.2 s | 9.4 s | 4.2 s | 12.1 s |
 | Full rebuild | 10.5 s | 15.2 s | 114.5 s | 154.6 s |
 | Initial load (event build) | 23.7 s | 32.7 s | 207.9 s | 429.6 s |
-| Peak Python memory, hourly | 56 MB | 93 MB | – | – |
-| Peak Python memory, full rebuild | 222 MB | 211 MB | – | – |
+| Peak Python memory, hourly | 56 MB | 93 MB | 33 MB | 40 MB |
+| Peak Python memory, full rebuild | 222 MB | 211 MB | 1,557 MB | 1,480 MB |
 
 Tests add a third check: the same detections ingested as shuffled batches (archives and late passes
 arriving in any order, an antimeridian fire included) give the same events and ids as a full rebuild
@@ -96,8 +96,8 @@ arriving in any order, an antimeridian fire included) give the same events and i
 * the chord distance test.
 
 Memory is measured with `tracemalloc` (Python allocations) in separate runs, so it never distorts a
-timing. Worldwide memory was not measured, to keep the run length reasonable. Full rebuilds scale at
-about 1.4 KB per detection in Africa.
+timing (worldwide: `--world-memory-only`). Full rebuilds need about 1.5–1.7 KB of Python memory per
+detection: 1.5 GB for one worldwide week. Hourly updates stay under 100 MB.
 
 ## 4. Chord distance vs haversine: exact membership equivalence
 
@@ -136,3 +136,15 @@ Events spanning 180° now have a wrap-aware centroid, bounding box (west > east)
 | All checks | passed (18/18) | v2 ids resolve: 2,000 / 2,000 sampled |
 
 Details, checks, size and rollback: [MIGRATION_V3.md](MIGRATION_V3.md).
+
+## 6. Production (after the migration)
+
+| Check | Result |
+|---|---|
+| Migration of `firelens.db` | 33.8 s. Verified against the backup: 18/18 |
+| Post-migration ingestion | 155,787 new detections (worldwide 24 h file), all in valid v3 events. The scheduled run at 00:37 UTC had no errors |
+| Health invariants on production after ingestion (345,217 detections) | 19/19 (`migration_rehearsal health`) |
+| Alerts, event growth, history, timeline, tiles, filters, calendar, export | 17/17 on an isolated copy of production (`post_migration_check`) |
+| Rollback cycle (restore → `728f83b` → roll forward) | restore byte-identical; `728f83b` serves and ingests; roll-forward 24/24 |
+
+Release summary: [RELEASE_V3.md](RELEASE_V3.md).
