@@ -4,205 +4,237 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FireLens</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🔥</text></svg>" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230a0a0a' stroke='%23ff6a1a' stroke-width='3'/><path d='M16 7c2 4 6 6 6 11a6 6 0 0 1-12 0c0-3 2-4 2-7 2 1 3 3 3 5 1-3 1-6 1-9z' fill='%23ff6a1a'/></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   </head>
-  <body>
+  <body class="view-simple">
+    <!-- icon set (stroke icons, currentColor) -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <symbol id="i-filters" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5z" /><path d="m3 13 9 5 9-5" /><path d="m3 17.5 9 5 9-5" /></symbol>
+      <symbol id="i-analysis" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4" /></symbol>
+      <symbol id="i-alerts" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4l2-2z" /><path d="M10 21a2 2 0 0 0 4 0" /></symbol>
+      <symbol id="i-guide" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.5" /></symbol>
+      <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 3c1.5 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.6 1.6-3.8 1.6-6.2 1.6.9 2.5 2.5 2.5 4.1.8-2.6.9-5.3.9-7.9z" /></symbol>
+    </svg>
+
     <div id="app">
-      <aside id="sidebar" aria-label="Filters, layers and analysis">
+      <aside id="sidebar" aria-label="Filters, layers and analysis" data-i18n-attr="aria-label:app.panel">
         <button type="button" id="sheet-handle" class="sheet-handle" aria-expanded="false" aria-controls="sidebar">
-          <span class="grip" aria-hidden="true"></span><span class="sheet-label">Filters, layers and analysis</span>
+          <span class="grip" aria-hidden="true"></span><span class="sheet-label" data-i18n="app.panel">Filters, layers and analysis</span>
         </button>
         <header class="brand">
-          <div>
-            <h1>FIRELENS</h1>
-            <p class="tagline">MODIS + VIIRS harmonized fire intelligence</p>
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13.5" /><path d="M16 7.5c1.8 3.8 5.6 5.8 5.6 10.6a5.6 5.6 0 0 1-11.2 0c0-2.9 1.8-4.2 1.8-6.9 1.8 1 2.8 2.8 2.8 4.6.9-2.9 1-5.6 1-8.3z" /></svg>
+          </div>
+          <div class="brand-text">
+            <h1>FIRE<span>LENS</span></h1>
+            <p class="tagline" data-i18n="app.tagline">Satellite fire intelligence</p>
           </div>
           <div class="brand-side">
-            <span id="mode-badge" class="badge">…</span>
-            <button type="button" id="guide-open" class="guide-btn" aria-label="How to read this map" title="How to read this map">?</button>
-            <button type="button" id="sidebar-collapse" class="collapse-btn" aria-expanded="true" aria-controls="sidebar" aria-label="Hide the side panel" title="Hide the side panel">«</button>
+            <div class="lang-switch" role="group" aria-label="Language" data-i18n-attr="aria-label:app.language">
+              <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
+              <button type="button" data-set-lang="es" aria-pressed="false">ES</button>
+            </div>
+            <button type="button" id="guide-open" class="guide-btn" aria-label="How to read this map" title="How to read this map" data-i18n-attr="aria-label:app.guideBtn;title:app.guideBtn">?</button>
+            <button type="button" id="sidebar-collapse" class="collapse-btn" aria-expanded="true" aria-controls="sidebar" aria-label="Hide the side panel" title="Hide the side panel" data-i18n-attr="aria-label:app.hidePanel;title:app.hidePanel">«</button>
           </div>
         </header>
+        <div class="toolbar">
+          <div class="view-switch" role="group" aria-label="View" data-i18n-attr="aria-label:app.view">
+            <button type="button" data-set-view="simple" class="active" aria-pressed="true" data-i18n-attr="title:view.simpleHint"><span data-i18n="view.simple">Simple</span></button>
+            <button type="button" data-set-view="advanced" aria-pressed="false" data-i18n-attr="title:view.advancedHint"><span data-i18n="view.advanced">Advanced</span></button>
+          </div>
+          <span id="mode-badge" class="badge">…</span>
+        </div>
         <div id="stats" class="stats"></div>
         <div id="active-filters" class="active-filters hidden" aria-live="polite"></div>
 
         <nav class="tabs" role="tablist">
-          <button class="tab active" data-tab="filters" role="tab">Filters</button>
-          <button class="tab" data-tab="layers" role="tab">Layers</button>
-          <button class="tab" data-tab="analysis" role="tab">Analysis</button>
-          <button class="tab" data-tab="calendar" role="tab">Calendar</button>
-          <button class="tab" data-tab="alerts" role="tab">Alerts</button>
+          <button class="tab active" data-tab="filters" role="tab"><svg class="ic"><use href="#i-filters" /></svg><span data-i18n="tab.filters">Filters</span></button>
+          <button class="tab" data-tab="layers" role="tab"><svg class="ic"><use href="#i-layers" /></svg><span data-i18n="tab.layers">Layers</span></button>
+          <button class="tab" data-tab="analysis" role="tab"><svg class="ic"><use href="#i-analysis" /></svg><span data-i18n="tab.analysis">Analysis</span></button>
+          <button class="tab" data-tab="calendar" role="tab"><svg class="ic"><use href="#i-calendar" /></svg><span data-i18n="tab.calendar">Calendar</span></button>
+          <button class="tab" data-tab="alerts" role="tab"><svg class="ic"><use href="#i-alerts" /></svg><span data-i18n="tab.alerts">Alerts</span></button>
+          <button class="tab" data-tab="guide" role="tab"><svg class="ic"><use href="#i-guide" /></svg><span data-i18n="tab.guide">Guide</span></button>
         </nav>
 
         <section id="tab-filters" class="panel active">
           <form id="filters">
             <fieldset>
-              <legend>Time</legend>
-              <div class="segmented" role="tablist" aria-label="Data mode">
-                <button type="button" data-mode="latest" class="active" role="tab" aria-selected="true">Latest</button>
-                <button type="button" data-mode="history" role="tab" aria-selected="false">History</button>
+              <legend data-i18n="f.time">Time</legend>
+              <div class="segmented" role="tablist" aria-label="Data mode" data-i18n-attr="aria-label:f.dataMode">
+                <button type="button" data-mode="latest" class="active" role="tab" aria-selected="true" data-i18n="f.latest">Latest</button>
+                <button type="button" data-mode="history" role="tab" aria-selected="false" data-i18n="f.history">History</button>
               </div>
 
               <div id="mode-latest">
                 <div class="chips" id="latest-window">
-                  <button type="button" data-hours="24" class="active">Last 24 h</button>
-                  <button type="button" data-hours="48">48 h</button>
-                  <button type="button" data-hours="168">7 days</button>
+                  <button type="button" data-hours="24" class="active" data-i18n="f.last24">Last 24 h</button>
+                  <button type="button" data-hours="48" data-i18n="f.last48">48 h</button>
+                  <button type="button" data-hours="168" data-i18n="f.last7d">7 days</button>
                 </div>
                 <p class="hint" id="freshness"></p>
-                <button type="button" id="fetch-latest" class="secondary small">Fetch newest from NASA now</button>
+                <button type="button" id="fetch-latest" class="secondary small adv" data-i18n="f.fetch">Fetch newest from NASA now</button>
               </div>
 
               <div id="mode-history" class="hidden">
                 <div class="row day-picker">
-                  <button type="button" class="icon" id="day-prev" aria-label="Previous day(s)">‹</button>
-                  <label>From <input type="date" name="start" /></label>
-                  <label>To <input type="date" name="end" /></label>
-                  <button type="button" class="icon" id="day-next" aria-label="Next day(s)">›</button>
+                  <button type="button" class="icon" id="day-prev" aria-label="Previous day(s)" data-i18n-attr="aria-label:f.prevDays">‹</button>
+                  <label><span data-i18n="f.from">From</span> <input type="date" name="start" /></label>
+                  <label><span data-i18n="f.to">To</span> <input type="date" name="end" /></label>
+                  <button type="button" class="icon" id="day-next" aria-label="Next day(s)" data-i18n-attr="aria-label:f.nextDays">›</button>
                 </div>
                 <div class="chips" id="history-presets">
-                  <button type="button" data-ago="1" data-span="1">Yesterday</button>
-                  <button type="button" data-ago="7" data-span="7">Last week</button>
-                  <button type="button" data-ago="30" data-span="30">Last 30 days</button>
+                  <button type="button" data-ago="1" data-span="1" data-i18n="f.yesterday">Yesterday</button>
+                  <button type="button" data-ago="7" data-span="7" data-i18n="f.lastWeek">Last week</button>
+                  <button type="button" data-ago="30" data-span="30" data-i18n="f.last30">Last 30 days</button>
                 </div>
                 <div id="coverage-banner" class="banner hidden" role="status">
                   <p class="banner-text"></p>
                   <div class="progress hidden"><div class="bar"></div></div>
-                  <button type="button" class="secondary small hidden" id="coverage-load">Load from NASA archive</button>
+                  <button type="button" class="secondary small hidden" id="coverage-load" data-i18n="f.loadArchive">Load from NASA archive</button>
                 </div>
               </div>
             </fieldset>
 
             <fieldset>
-              <legend>Sensor <button type="button" class="help" data-help="sensors" aria-label="Explain">?</button></legend>
+              <legend><span data-i18n="f.sensor">Sensor</span> <button type="button" class="help" data-help="sensors" aria-label="Explain">?</button></legend>
               <div class="row checks">
                 <label><input type="checkbox" name="instrument" value="MODIS" checked /> MODIS <small>1 km</small></label>
                 <label><input type="checkbox" name="instrument" value="VIIRS" checked /> VIIRS <small>375 m</small></label>
               </div>
-              <div class="sat-label">Satellites <small>(none ticked = all)</small></div>
-              <div class="toggle-chips">
-                <label><input type="checkbox" name="satellite" value="Terra" /><span>Terra</span></label>
-                <label><input type="checkbox" name="satellite" value="Aqua" /><span>Aqua</span></label>
-                <label><input type="checkbox" name="satellite" value="Suomi NPP" /><span>Suomi NPP</span></label>
-                <label><input type="checkbox" name="satellite" value="NOAA-20" /><span>NOAA-20</span></label>
-                <label><input type="checkbox" name="satellite" value="NOAA-21" /><span>NOAA-21</span></label>
+              <div class="adv">
+                <div class="sat-label"><span data-i18n="f.satellites">Satellites</span> <small data-i18n="f.noneAll">(none ticked = all)</small></div>
+                <div class="toggle-chips">
+                  <label><input type="checkbox" name="satellite" value="Terra" /><span>Terra</span></label>
+                  <label><input type="checkbox" name="satellite" value="Aqua" /><span>Aqua</span></label>
+                  <label><input type="checkbox" name="satellite" value="Suomi NPP" /><span>Suomi NPP</span></label>
+                  <label><input type="checkbox" name="satellite" value="NOAA-20" /><span>NOAA-20</span></label>
+                  <label><input type="checkbox" name="satellite" value="NOAA-21" /><span>NOAA-21</span></label>
+                </div>
               </div>
             </fieldset>
 
-            <fieldset>
-              <legend>Detection</legend>
+            <fieldset class="adv">
+              <legend data-i18n="f.detection">Detection</legend>
               <div class="row">
-                <label><span>Confidence <button type="button" class="help" data-help="confidence" aria-label="Explain">?</button></span>
+                <label><span><span data-i18n="f.confidence">Confidence</span> <button type="button" class="help" data-help="confidence" aria-label="Explain">?</button></span>
                   <select name="min_confidence">
-                    <option value="" selected>All, like NASA's map</option><option value="nominal">Nominal and high</option><option value="high">High only</option>
+                    <option value="" selected data-i18n="f.confAll">All, like NASA's map</option><option value="nominal" data-i18n="f.confNominal">Nominal and high</option><option value="high" data-i18n="f.confHigh">High only</option>
                   </select>
                 </label>
-                <label><span>Day / night <button type="button" class="help" data-help="daynight" aria-label="Explain">?</button></span>
-                  <select name="daynight"><option value="">Both</option><option value="D">Day</option><option value="N">Night</option></select>
+                <label><span><span data-i18n="f.daynight">Day / night</span> <button type="button" class="help" data-help="daynight" aria-label="Explain">?</button></span>
+                  <select name="daynight"><option value="" data-i18n="f.both">Both</option><option value="D" data-i18n="f.day">Day</option><option value="N" data-i18n="f.night">Night</option></select>
                 </label>
               </div>
               <div class="row">
-                <label><span>Fire power min <button type="button" class="help" data-help="frp" aria-label="Explain">?</button></span> <input type="number" name="min_frp" min="0" step="any" placeholder="MW" /></label>
-                <label><span>Fire power max</span> <input type="number" name="max_frp" min="0" step="any" placeholder="MW" /></label>
+                <label><span><span data-i18n="f.frpMin">Fire power min</span> <button type="button" class="help" data-help="frp" aria-label="Explain">?</button></span> <input type="number" name="min_frp" min="0" step="any" placeholder="MW" /></label>
+                <label><span data-i18n="f.frpMax">Fire power max</span> <input type="number" name="max_frp" min="0" step="any" placeholder="MW" /></label>
               </div>
             </fieldset>
 
-            <fieldset>
-              <legend>Fire events <button type="button" class="help" data-help="event" aria-label="Explain">?</button></legend>
+            <fieldset class="adv">
+              <legend><span data-i18n="f.events">Fire events</span> <button type="button" class="help" data-help="event" aria-label="Explain">?</button></legend>
               <div class="row">
-                <label>Footprint min <input type="number" name="min_area" min="0" step="any" placeholder="km²" /></label>
-                <label>Footprint max <input type="number" name="max_area" min="0" step="any" placeholder="km²" /></label>
+                <label><span data-i18n="f.areaMin">Footprint min</span> <input type="number" name="min_area" min="0" step="any" placeholder="km²" /></label>
+                <label><span data-i18n="f.areaMax">Footprint max</span> <input type="number" name="max_area" min="0" step="any" placeholder="km²" /></label>
               </div>
               <div class="row">
-                <label>Min detections <input type="number" name="min_detections" min="1" step="1" /></label>
-                <label><span>Status <button type="button" class="help" data-help="status" aria-label="Explain">?</button></span>
-                  <select name="status"><option value="">All</option><option value="active">Active</option><option value="inactive">No recent detection</option></select>
+                <label><span data-i18n="f.minDet">Min detections</span> <input type="number" name="min_detections" min="1" step="1" /></label>
+                <label><span><span data-i18n="f.status">Status</span> <button type="button" class="help" data-help="status" aria-label="Explain">?</button></span>
+                  <select name="status"><option value="" data-i18n="f.all">All</option><option value="active" data-i18n="f.active">Active</option><option value="inactive" data-i18n="f.inactive">No recent detection</option></select>
                 </label>
               </div>
             </fieldset>
 
-            <fieldset>
-              <legend>Around a place <button type="button" class="help" data-help="location" aria-label="Explain">?</button></legend>
+            <fieldset class="adv">
+              <legend><span data-i18n="f.place">Around a place</span> <button type="button" class="help" data-help="location" aria-label="Explain">?</button></legend>
               <div class="row">
-                <label>Lat <input type="number" name="lat" step="any" min="-90" max="90" /></label>
-                <label>Lon <input type="number" name="lon" step="any" min="-180" max="180" /></label>
-                <label>Radius km <input type="number" name="radius_km" step="any" min="0" /></label>
+                <label><span data-i18n="f.lat">Lat</span> <input type="number" name="lat" step="any" min="-90" max="90" /></label>
+                <label><span data-i18n="f.lon">Lon</span> <input type="number" name="lon" step="any" min="-180" max="180" /></label>
+                <label><span data-i18n="f.radius">Radius km</span> <input type="number" name="radius_km" step="any" min="0" /></label>
               </div>
-              <button type="button" id="pick-point" class="secondary">Pick point on globe</button>
+              <button type="button" id="pick-point" class="secondary" data-i18n="f.pick">Pick point on globe</button>
             </fieldset>
 
-            <p class="hint">Changes apply as you make them.</p>
+            <p class="hint simple-only" data-i18n="f.simpleMore">More filters are in the Advanced view.</p>
+            <p class="hint adv" data-i18n="f.applies">Changes apply as you make them.</p>
             <div class="actions">
-              <button type="reset" class="secondary">Reset all filters</button>
+              <button type="reset" class="secondary" data-i18n="f.reset">Reset all filters</button>
             </div>
           </form>
         </section>
 
         <section id="tab-layers" class="panel">
           <fieldset>
-            <legend>Base map</legend>
-            <label class="inline"><input type="radio" name="base" value="esri" checked /> Satellite (Esri World Imagery)</label>
-            <label class="inline"><input type="radio" name="base" value="gibs" /> NASA VIIRS NOAA-20 true colour (daily)</label>
-            <label>GIBS date <input type="date" id="gibs-date" /></label>
-            <label class="inline"><input type="radio" name="base" value="osm" /> OpenStreetMap</label>
+            <legend data-i18n="l.base">Base map</legend>
+            <label class="inline"><input type="radio" name="base" value="esri" checked /> <span data-i18n="l.esri">Satellite (Esri World Imagery)</span></label>
+            <label class="inline"><input type="radio" name="base" value="gibs" /> <span data-i18n="l.gibs">NASA VIIRS NOAA-20 true colour (daily)</span></label>
+            <label class="adv"><span data-i18n="l.gibsDate">GIBS date</span> <input type="date" id="gibs-date" /></label>
+            <label class="inline"><input type="radio" name="base" value="osm" /> <span data-i18n="l.osm">OpenStreetMap</span></label>
           </fieldset>
           <fieldset>
-            <legend>Overlays</legend>
-            <label class="inline"><input type="checkbox" id="lyr-detections" checked /> Fire detections (colour = fire power)</label>
-            <label class="inline"><input type="checkbox" id="lyr-events" checked /> Fire events (circle size = footprint)</label>
-            <label class="inline"><input type="checkbox" id="lyr-zones" checked /> Alert zones</label>
-            <label class="inline"><input type="checkbox" id="lyr-ndvi" /> Vegetation greenness (NDVI, 8-day) <button type="button" class="help" data-help="ndvi" aria-label="Explain">?</button></label>
-            <label class="inline"><input type="checkbox" id="lyr-static" /> Non-fire heat sources (gas flares, volcanoes, offshore platforms)</label>
-            <p class="hint">Hidden by default: the NASA archive labels them, and FireLens also marks near-real-time detections on those sites. They never form fire events or trigger alerts.</p>
+            <legend data-i18n="l.overlays">Overlays</legend>
+            <label class="inline"><input type="checkbox" id="lyr-detections" checked /> <span data-i18n="l.detections">Fire detections (colour = fire power)</span></label>
+            <label class="inline"><input type="checkbox" id="lyr-events" checked /> <span data-i18n="l.events">Fire events (circle size = footprint)</span></label>
+            <label class="inline"><input type="checkbox" id="lyr-zones" checked /> <span data-i18n="l.zones">Alert zones</span></label>
+            <label class="inline"><input type="checkbox" id="lyr-ndvi" /> <span data-i18n="l.ndvi">Vegetation greenness (NDVI, 8-day)</span> <button type="button" class="help" data-help="ndvi" aria-label="Explain">?</button></label>
+            <label class="inline adv"><input type="checkbox" id="lyr-static" /> <span data-i18n="l.static">Non-fire heat sources (gas flares, volcanoes, offshore platforms)</span></label>
+            <p class="hint adv" data-i18n="l.staticHint">Hidden by default.</p>
           </fieldset>
-          <p class="hint">The legend is on the map, bottom left.</p>
+          <p class="hint" data-i18n="l.legendHint">The legend is on the map, bottom left.</p>
         </section>
 
         <section id="tab-analysis" class="panel">
-          <div class="segmented" id="analysis-kind" role="tablist">
-            <button type="button" class="active" data-kind="stats">Statistics</button>
-            <button type="button" data-kind="sensors">MODIS vs VIIRS</button>
+          <div class="segmented adv" id="analysis-kind" role="tablist">
+            <button type="button" class="active" data-kind="stats" data-i18n="a.stats">Statistics</button>
+            <button type="button" data-kind="sensors" data-i18n="a.sensors">MODIS vs VIIRS</button>
           </div>
           <p class="hint" id="analysis-scope"></p>
-          <div class="actions"><button type="button" id="analysis-run">Analyse the area in view</button></div>
+          <div class="actions"><button type="button" id="analysis-run" class="primary-wide"><svg class="ic"><use href="#i-analysis" /></svg><span data-i18n="a.run">Analyse the area in view</span></button></div>
           <div id="analysis-body"></div>
         </section>
 
         <section id="tab-calendar" class="panel">
           <div class="cal-head">
-            <button type="button" id="cal-prev" class="icon" aria-label="Previous month">‹</button>
+            <button type="button" id="cal-prev" class="icon" aria-label="Previous month" data-i18n-attr="aria-label:c.prev">‹</button>
             <h2 id="cal-title"></h2>
-            <button type="button" id="cal-next" class="icon" aria-label="Next month">›</button>
+            <button type="button" id="cal-next" class="icon" aria-label="Next month" data-i18n-attr="aria-label:c.next">›</button>
           </div>
           <div id="calendar" class="calendar"></div>
-          <p class="hint">Colour = detections per day. Click a day to load that day's fires.</p>
+          <p class="hint" data-i18n="c.hint">Colour = detections per day.</p>
           <h3 id="cal-day-title"></h3>
           <ul id="cal-events" class="list"></ul>
 
-          <form id="history-form" class="history">
+          <p class="hint simple-only" data-i18n="c.simpleMore">Loading older history is in the Advanced view.</p>
+          <form id="history-form" class="history adv">
             <fieldset>
-              <legend>Fire history (NASA FIRMS archive)</legend>
+              <legend data-i18n="c.history">Fire history (NASA FIRMS archive)</legend>
               <p class="hint" id="history-coverage"></p>
               <div id="history-controls">
                 <div class="row">
-                  <label>From <input type="date" name="start" required /></label>
-                  <label>To <input type="date" name="end" required /></label>
+                  <label><span data-i18n="f.from">From</span> <input type="date" name="start" required /></label>
+                  <label><span data-i18n="f.to">To</span> <input type="date" name="end" required /></label>
                 </div>
                 <div class="row">
-                  <label>Area
+                  <label><span data-i18n="c.area">Area</span>
                     <select name="scope">
-                      <option value="country" selected>Country (ISO code)</option>
-                      <option value="view">Current globe view</option>
+                      <option value="country" selected data-i18n="c.countryScope">Country (ISO code)</option>
+                      <option value="view" data-i18n="c.viewScope">Current globe view</option>
                     </select>
                   </label>
-                  <label>Country <select name="country"><option value="ARG">Argentina</option></select></label>
+                  <label><span data-i18n="c.country">Country</span> <select name="country"><option value="ARG">Argentina</option></select></label>
                 </div>
-                <div class="actions"><button type="submit" id="history-start">Load history</button></div>
+                <div class="actions"><button type="submit" id="history-start" data-i18n="c.load">Load history</button></div>
               </div>
               <div id="history-job" class="job hidden">
                 <div class="progress"><div class="bar"></div></div>
                 <p class="hint job-text"></p>
-                <button type="button" id="history-cancel" class="secondary small">Cancel</button>
+                <button type="button" id="history-cancel" class="secondary small" data-i18n="c.cancel">Cancel</button>
               </div>
             </fieldset>
           </form>
@@ -211,40 +243,42 @@
         <section id="tab-alerts" class="panel">
           <form id="rule-form">
             <fieldset>
-              <legend>New alert rule</legend>
-              <label>Name <input name="name" required maxlength="120" placeholder="e.g. Sierras de Córdoba" /></label>
-              <p class="hint">Zone = current globe view, or the point + radius set in Filters.</p>
+              <legend data-i18n="al.new">New alert rule</legend>
+              <label><span data-i18n="al.name">Name</span> <input name="name" required maxlength="120" placeholder="e.g. Sierras de Córdoba" data-i18n-attr="placeholder:al.namePh" /></label>
+              <p class="hint" data-i18n="al.zoneHint">Zone = current globe view, or the point + radius set in Filters.</p>
               <div class="row">
-                <label>Min confidence
-                  <select name="min_confidence"><option value="low">Low</option><option value="nominal" selected>Nominal</option><option value="high">High</option></select>
+                <label><span data-i18n="al.minConf">Min confidence</span>
+                  <select name="min_confidence"><option value="low" data-i18n="al.low">Low</option><option value="nominal" selected data-i18n="al.nominal">Nominal</option><option value="high" data-i18n="al.high">High</option></select>
                 </label>
-                <label>Min area (km²) <input type="number" name="min_area_km2" min="0" step="any" value="0" /></label>
+                <label><span data-i18n="al.minArea">Min area (km²)</span> <input type="number" name="min_area_km2" min="0" step="any" value="0" /></label>
               </div>
-              <div class="row">
-                <label>Min FRP (MW) <input type="number" name="min_frp_mw" min="0" step="any" value="0" /></label>
-                <label>Min detections <input type="number" name="min_detections" min="1" step="1" value="1" /></label>
+              <div class="row adv">
+                <label><span data-i18n="al.minFrp">Min FRP (MW)</span> <input type="number" name="min_frp_mw" min="0" step="any" value="0" /></label>
+                <label><span data-i18n="al.minDet">Min detections</span> <input type="number" name="min_detections" min="1" step="1" value="1" /></label>
               </div>
-              <label>Webhook URL (optional) <input type="url" name="webhook_url" placeholder="https://…" /></label>
-              <div class="actions"><button type="submit">Create rule</button></div>
+              <label class="adv"><span data-i18n="al.webhook">Webhook URL (optional)</span> <input type="url" name="webhook_url" placeholder="https://…" /></label>
+              <div class="actions"><button type="submit" data-i18n="al.create">Create rule</button></div>
             </fieldset>
           </form>
-          <h3>Rules</h3>
+          <h3 data-i18n="al.rules">Rules</h3>
           <ul id="rules" class="list"></ul>
-          <h3>Recent alerts</h3>
+          <h3 data-i18n="al.recent">Recent alerts</h3>
           <ul id="alerts" class="list"></ul>
         </section>
+
+        <section id="tab-guide" class="panel"></section>
       </aside>
 
       <main id="globe"></main>
-      <button type="button" id="sidebar-open" class="map-open-panel hidden" aria-controls="sidebar" aria-label="Show the side panel">☰ Panel</button>
+      <button type="button" id="sidebar-open" class="map-open-panel hidden" aria-controls="sidebar" aria-label="Show the side panel" data-i18n-attr="aria-label:app.showPanel">☰ <span data-i18n="app.panelBtn">Panel</span></button>
 
       <aside id="details" class="details hidden">
-        <button type="button" id="details-close" class="icon close" aria-label="Close">×</button>
+        <button type="button" id="details-close" class="icon close" aria-label="Close" data-i18n-attr="aria-label:app.close">×</button>
         <div id="details-body"></div>
       </aside>
       <div id="toast" class="toast hidden" role="status"></div>
       <div id="chart-tip" class="chart-tip hidden"></div>
-      <div id="picking-hint" class="picking hidden">Click the globe to set the point · Esc to cancel</div>
+      <div id="picking-hint" class="picking hidden" data-i18n="app.picking">Click the globe to set the point · Esc to cancel</div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

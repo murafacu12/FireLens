@@ -133,9 +133,8 @@ The ring itself is a useful, honest product:
 - it catches 35% of the next day's new fire in 5 km², 53% in 10 km² and 82% in 40 km²;
 - those are measured hit rates that can be shown next to it.
 
-**What could still be tried** (each tested the same way):
-- **A data-driven model:** probability of a new detection per cell, learned from FireLens's own
-  history. Inputs would be distance to the front, alignment with the wind, land cover, slope and
-  the fire's recent growth. It would be validated on held-out fires against the circle.
+**What could still be tried** (tested the same way):
 - **Physical spread only where it applies:** fires in continuous forest, shrub or grass with
   wind ≥ 15 km/h. That is a small share of fires, so testing it needs a larger sample.
+- **Geostationary fire detections** (GOES, Meteosat, every 10–15 minutes) would show spread
+  almost continuously instead of at a few satellite passes a day.

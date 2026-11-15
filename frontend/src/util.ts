@@ -1,3 +1,5 @@
+import { locale } from "./prefs";
+
 export const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document): T => {
   const el = root.querySelector<T>(sel);
   if (!el) throw new Error(`missing element ${sel}`);
@@ -15,13 +17,13 @@ export function daysAgo(n: number): Date {
 }
 
 export function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  return new Date(iso).toLocaleString(locale(), {
     year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
   });
 }
 
 export const fmtNum = (n: number | null | undefined, digits = 1) =>
-  n == null ? "–" : n.toLocaleString(undefined, { maximumFractionDigits: digits });
+  n == null ? "–" : n.toLocaleString(locale(), { maximumFractionDigits: digits });
 
 let toastTimer: number | undefined;
 export function toast(message: string, kind: "info" | "error" = "info"): void {

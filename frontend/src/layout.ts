@@ -2,6 +2,7 @@
 // globe fills the screen and the sidebar is a bottom sheet that shows just the title and totals
 // until it is opened (tap or swipe its handle).
 import { $ } from "./util";
+import { onPrefsChange, t } from "./prefs";
 
 const MOBILE = window.matchMedia("(max-width: 900px)");
 const KEY = "firelens.sidebar";
@@ -39,7 +40,7 @@ function setSheetOpen(open: boolean): void {
   sidebar.classList.toggle("sheet-open", open);
   const handle = $("#sheet-handle");
   handle.setAttribute("aria-expanded", String(open));
-  $(".sheet-label", handle).textContent = open ? "Show the map" : "Filters, layers and analysis";
+  $(".sheet-label", handle).textContent = open ? t("app.showMap") : t("app.panel");
 }
 
 /** On phones, get the sheet out of the way so the user can see (or tap) the map. */
@@ -87,5 +88,6 @@ export function wireLayout(resizeGlobe: () => void): void {
   // choosing a tab in the collapsed sheet opens it
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => t.addEventListener("click", () => isMobile() && setSheetOpen(true)));
   MOBILE.addEventListener("change", apply);
+  onPrefsChange(() => setSheetOpen($("#sidebar").classList.contains("sheet-open"))); // label in the new language
   apply();
 }

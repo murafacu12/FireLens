@@ -1,13 +1,15 @@
 import "./styles.css";
 
 import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health, type Params } from "./api";
-import { runAnalysis, runSensors, wireAnalysis } from "./analysis";
+import { clearAnalysis, runAnalysis, runSensors, wireAnalysis } from "./analysis";
 import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
 import { setSpreadDrawer } from "./firereport";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { helpButton, mountGuide, mountLegend, showMapTip, wireHelp } from "./guide";
 import { revealMap, wireLayout } from "./layout";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
+import { mountGuideTab } from "./about";
+import { isSimple, locale, onPrefsChange, t, tn, wirePrefs } from "./prefs";
 
 const filtersForm = $<HTMLFormElement>("#filters");
 const MAX_ZONE_DEG = 40; // an alert zone taken from a zoomed-out view would cover half the planet
@@ -38,7 +40,7 @@ function onPick(r: PickResult): void {
     globe.flyToBox(r.lon - h, r.lat - h, r.lon + h, r.lat + h);
   } else if (r.kind === "event") void openEvent(r.eventId);
   else if (r.kind === "detection") {
-    api.detection(r.id).then(showDetection, (err: Error) => toast(`Could not load detection: ${err.message}`, "error"));
+    api.detection(r.id).then(showDetection, (err: Error) => toast(t("toast.detFailed", { msg: err.message }), "error"));
   }
   else showPoint(r.lat, r.lon);
 }
@@ -60,7 +62,7 @@ async function openEvent(id: string): Promise<void> {
     });
     globe.flyToBox(ev.west, ev.south, ev.east, ev.north);
   } catch (err) {
-    toast(`Could not load event: ${(err as Error).message}`, "error");
+    toast(t("toast.evFailed", { msg: (err as Error).message }), "error");
   }
 }
 
@@ -143,19 +145,19 @@ $("#latest-window").addEventListener("click", (e) => {
 $("#fetch-latest").addEventListener("click", async (e) => {
   const btn = e.currentTarget as HTMLButtonElement;
   btn.disabled = true;
-  btn.textContent = "Fetching from NASA…";
+  btn.textContent = t("f.fetching");
   try {
     const report = (await api.ingest({})) as { stored: number; sources: { source: string; error: string | null }[] };
     const failed = report.sources.filter((s) => s.error).map((s) => s.source);
-    toast(`NASA FIRMS: ${report.stored.toLocaleString()} detections refreshed${failed.length ? ` (failed: ${failed.join(", ")})` : ""}.`,
+    toast(t("toast.fetched", { n: report.stored.toLocaleString(locale()), failed: failed.length ? t("toast.fetchedFailed", { list: failed.join(", ") }) : "" }),
       failed.length ? "error" : "info");
     await loadHealth();
     await syncEpoch();
   } catch (err) {
-    toast(`Fetch failed: ${(err as Error).message}`, "error");
+    toast(t("toast.fetchFailed", { msg: (err as Error).message }), "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Fetch newest from NASA now";
+    btn.textContent = t("f.fetch");
   }
 });
 
@@ -190,12 +192,14 @@ for (const name of ["start", "end"] as const) {
 function renderFreshness(): void {
   const el = $("#freshness");
   if (!health?.latest_detection_at) {
-    el.textContent = "No detections loaded yet.";
+    el.textContent = t("f.noData");
     return;
   }
   const ageMin = Math.max(0, Math.round((Date.now() - new Date(health.latest_detection_at).getTime()) / 60_000));
-  const age = ageMin < 60 ? `${ageMin} min` : `${Math.floor(ageMin / 60)} h ${ageMin % 60} min`;
-  el.innerHTML = `Latest satellite data: <b>${age} ago</b> <small>(${esc(fmtTime(health.latest_detection_at))})</small> ${helpButton("freshness")}`;
+  el.innerHTML = `${t("f.latestData", { age: ageText(ageMin), when: esc(fmtTime(health.latest_detection_at)) })} ${helpButton("freshness")}`;
+}
+function ageText(min: number): string {
+  return min < 60 ? t("f.ageMin", { m: min }) : t("f.ageH", { h: Math.floor(min / 60), m: min % 60 });
 }
 window.setInterval(renderFreshness, 30_000);
 window.setInterval(async () => {
@@ -229,7 +233,7 @@ function snapBbox(b: [number, number, number, number]): string {
   return [Math.max(-180, f(b[0])), Math.max(-90, f(b[1])), Math.min(180, c(b[2])), Math.min(90, c(b[3]))].join(",");
 }
 
-const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(locale(), { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 
 async function checkCoverage(): Promise<void> {
   if (timeMode !== "history" || focusEventId) return showBanner("", "hidden");
@@ -251,25 +255,25 @@ async function checkCoverage(): Promise<void> {
   }
   const total = cov.days.length;
   const what = missing.length === total
-    ? (total === 1 ? `${fmtDay(start)} isn't` : "These days aren't")
-    : `${missing.length} of ${total} days aren't`;
+    ? (total === 1 ? t("hb.dayNot", { day: fmtDay(start) }) : t("hb.daysNot"))
+    : t("hb.someNot", { n: missing.length, total });
   if (!cov.can_load) {
-    return showBanner(`${what} loaded for this area. Loading history needs a FIRMS MAP_KEY (see Calendar → Fire history).`, "warn");
+    return showBanner(t("hb.needKey", { what }), "warn");
   }
   if (!view || view[0] > view[2] || viewSpanDeg(view) > MAX_LOAD_SPAN_DEG) {
-    return showBanner(`${what} fully loaded for this area. Zoom in to a region (under ${MAX_LOAD_SPAN_DEG}° across) and FireLens will load it from the NASA archive.`, "warn");
+    return showBanner(t("hb.zoomIn", { what, deg: MAX_LOAD_SPAN_DEG }), "warn");
   }
   const first = missing[0];
   const last = missing[missing.length - 1];
   const daysToLoad = Math.round((Date.parse(last) - Date.parse(first)) / 86_400_000) + 1;
   if (daysToLoad > MAX_LOAD_DAYS) {
-    return showBanner(`${what} loaded for this area. Pick ${MAX_LOAD_DAYS} days or fewer to load them automatically, or:`, "warn", true);
+    return showBanner(t("hb.tooMany", { what, n: MAX_LOAD_DAYS }), "warn", true);
   }
   const box = snapBbox(view);
   const key = `${first}|${last}|${box}`;
   if (attemptedLoads.has(key)) {
     // tried already: NASA may not have these days for every satellite; don't loop
-    return showBanner(`${what} complete for this area in the NASA archive (already requested).`, "warn", true);
+    return showBanner(t("hb.tried", { what }), "warn", true);
   }
   attemptedLoads.add(key);
   await startCoverageLoad(first, last, box);
@@ -286,7 +290,7 @@ async function startCoverageLoad(start: string, end: string, bbox: string): Prom
       const running = (await api.jobs().catch(() => [] as BackfillJob[])).find((j) => j.status === "running" || j.status === "queued");
       if (running) return followCoverageJob(running.id);
     }
-    showBanner(`Could not load from NASA: ${esc(msg)}`, "warn", true);
+    showBanner(t("hb.failed", { msg: esc(msg) }), "warn", true);
   }
 }
 
@@ -299,15 +303,14 @@ function followCoverageJob(id: string): void {
       job = await api.job(id);
     } catch (err) {
       coverageJobId = null;
-      return showBanner(`Lost track of the NASA load: ${esc((err as Error).message)}`, "warn", true);
+      return showBanner(t("hb.lost", { msg: esc((err as Error).message) }), "warn", true);
     }
     const r = job.request;
     const range = r.start === r.end ? fmtDay(r.start) : `${fmtDay(r.start)} – ${fmtDay(r.end)}`;
     if (job.status === "queued" || job.status === "running") {
       banner.className = "banner";
-      $(".banner-text", banner).innerHTML =
-        `Loading <b>${esc(range)}</b> from the NASA archive… ${job.done_chunks}/${job.total_chunks || "?"} requests · ` +
-        `${job.detections.toLocaleString()} detections`;
+      $(".banner-text", banner).innerHTML = t("hb.loading", {
+        range: esc(range), done: job.done_chunks, total: job.total_chunks || "?", n: job.detections.toLocaleString(locale()) });
       $(".progress", banner).classList.remove("hidden");
       $(".bar", banner).style.width = `${Math.round(job.progress * 100)}%`;
       $("#coverage-load").classList.add("hidden");
@@ -316,14 +319,14 @@ function followCoverageJob(id: string): void {
     }
     coverageJobId = null;
     if (job.status === "done") {
-      const partial = job.failed_chunks ? ` (${job.failed_chunks} request(s) failed)` : "";
-      showBanner(`Loaded ${esc(range)}: ${job.detections.toLocaleString()} detections${partial}.`, job.failed_chunks ? "warn" : "ok");
+      const partial = job.failed_chunks ? t("hb.partial", { n: job.failed_chunks }) : "";
+      showBanner(t("hb.loaded", { range: esc(range), n: job.detections.toLocaleString(locale()), partial }), job.failed_chunks ? "warn" : "ok");
       keepBannerUntil = Date.now() + 8000;
       window.setTimeout(() => void checkCoverage(), 8200);
       void renderCalendar();
       await refresh(); // re-checks coverage; anything NASA didn't have stays flagged, without looping
     } else {
-      showBanner(`NASA load ${esc(job.status)}: ${esc(job.errors.at(-1) ?? "no data returned")}`, "warn", true);
+      showBanner(t("hb.status", { status: esc(job.status), msg: esc(job.errors.at(-1) ?? t("hb.noData")) }), "warn", true);
     }
   };
   void tick();
@@ -332,12 +335,12 @@ function followCoverageJob(id: string): void {
 $("#coverage-load").addEventListener("click", async () => {
   const view = globe.viewBbox();
   if (!view || view[0] > view[2] || viewSpanDeg(view) > MAX_LOAD_SPAN_DEG) {
-    return toast(`Zoom in to a region under ${MAX_LOAD_SPAN_DEG}° across first.`, "error");
+    return toast(t("hb.zoomFirst", { deg: MAX_LOAD_SPAN_DEG }), "error");
   }
   const start = dateInput("start").value;
   const end = dateInput("end").value;
   const days = Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1;
-  if (days > 400) return toast("Pick 400 days or fewer.", "error");
+  if (days > 400) return toast(t("hb.max400"), "error");
   await startCoverageLoad(start, end, snapBbox(view));
 });
 
@@ -359,7 +362,7 @@ let errorShown = 0;
 globe.tiles.onError = (msg) => {
   if (Date.now() - errorShown < 10_000) return; // one toast for a burst of failed tiles
   errorShown = Date.now();
-  toast(`Failed to load map tiles: ${msg}`, "error");
+  toast(t("toast.tiles", { msg }), "error");
 };
 let statsTimer: number | undefined;
 globe.tiles.onChange = () => {
@@ -375,10 +378,10 @@ function renderTileStats(): void {
   if (!bbox || !currentLod) return renderStats(0, eventsInView);
   const st = globe.tiles.stats(bbox);
   const note = st.loading
-    ? `Loading ${st.loading} tile${st.loading > 1 ? "s" : ""}…`
+    ? tn("stats.loadingTiles", st.loading)
     : currentLod.kind === "cells"
-      ? `Grouped in ${fmtCell(currentLod.cellDeg!)} cells · zoom in for individual fires`
-      : st.truncated ? "Very dense area: showing the strongest detections per tile" : "";
+      ? t("stats.grouped", { cell: fmtCell(currentLod.cellDeg!) })
+      : st.truncated ? t("stats.dense") : "";
   renderStats(st.detections, eventsInView, note, currentLod.kind === "cells");
 }
 
@@ -440,15 +443,17 @@ async function refresh(): Promise<void> {
     if (seq !== refreshSeq) return;
     updateView();
   } catch (err) {
-    toast(`Failed to load data: ${(err as Error).message}`, "error");
+    toast(t("toast.data", { msg: (err as Error).message }), "error");
   }
 }
 
+let lastStats: [number, number, string, boolean] = [0, 0, "", false];
 function renderStats(dets: number, events: number, note = "", approx = false): void {
+  lastStats = [dets, events, note, approx];
   $("#stats").innerHTML = `
-    <div><b>${approx && dets ? "≈ " : ""}${dets.toLocaleString()}</b><span>detections in view</span></div>
-    <div><b>${events.toLocaleString()}</b><span>fire events</span></div>
-    ${focusEventId ? `<button type="button" id="clear-focus" class="secondary small">Show all</button>` : ""}
+    <div><b>${approx && dets ? "≈ " : ""}${dets.toLocaleString(locale())}</b><span>${t("stats.detections")}</span></div>
+    <div><b>${events.toLocaleString(locale())}</b><span>${t("stats.events")}</span></div>
+    ${focusEventId ? `<button type="button" id="clear-focus" class="secondary small">${t("stats.showAll")}</button>` : ""}
     ${note ? `<p class="stats-note">${esc(note)}</p>` : ""}`;
   document.getElementById("clear-focus")?.addEventListener("click", () => {
     focusEventId = null;
@@ -507,24 +512,25 @@ function renderActiveFilters(): void {
   const v = (k: string) => ((f.get(k) as string | null) ?? "").trim();
   const chips: [string, string[]][] = [];
   const conf = v("min_confidence");
-  if (conf) chips.push([conf === "high" ? "High confidence only" : "Nominal and high confidence", ["min_confidence"]]);
+  const range = (lo: string, hi: string) => `${lo ? `≥ ${lo}` : ""}${lo && hi ? t("chip.and") : ""}${hi ? `≤ ${hi}` : ""}`;
+  if (conf) chips.push([conf === "high" ? t("chip.high") : t("chip.nominal"), ["min_confidence"]]);
   const ins = f.getAll("instrument");
-  if (ins.length === 1) chips.push([`${ins[0]} only`, ["instrument"]]);
-  if (ins.length === 0) chips.push(["No sensor selected", ["instrument"]]);
+  if (ins.length === 1) chips.push([t("chip.only", { what: String(ins[0]) }), ["instrument"]]);
+  if (ins.length === 0) chips.push([t("chip.noSensor"), ["instrument"]]);
   const sats = f.getAll("satellite") as string[];
-  if (sats.length) chips.push([`Satellites: ${sats.join(", ")}`, ["satellite"]]);
-  if (v("daynight")) chips.push([v("daynight") === "D" ? "Day passes" : "Night passes", ["daynight"]]);
-  if (v("min_frp") || v("max_frp")) chips.push([`Fire power ${v("min_frp") ? `≥ ${v("min_frp")}` : ""}${v("min_frp") && v("max_frp") ? " and " : ""}${v("max_frp") ? `≤ ${v("max_frp")}` : ""} MW`, ["min_frp", "max_frp"]]);
-  if (v("min_area") || v("max_area")) chips.push([`Footprint ${v("min_area") ? `≥ ${v("min_area")}` : ""}${v("min_area") && v("max_area") ? " and " : ""}${v("max_area") ? `≤ ${v("max_area")}` : ""} km²`, ["min_area", "max_area"]]);
-  if (v("min_detections")) chips.push([`Events with ≥ ${v("min_detections")} detections`, ["min_detections"]]);
-  if (v("status")) chips.push([v("status") === "active" ? "Active fires only" : "No recent detection only", ["status"]]);
-  if (v("lat") && v("lon") && v("radius_km")) chips.push([`Within ${v("radius_km")} km of ${Number(v("lat")).toFixed(2)}, ${Number(v("lon")).toFixed(2)}`, ["lat", "lon", "radius_km"]]);
+  if (sats.length) chips.push([t("chip.sats", { list: sats.join(", ") }), ["satellite"]]);
+  if (v("daynight")) chips.push([v("daynight") === "D" ? t("chip.day") : t("chip.night"), ["daynight"]]);
+  if (v("min_frp") || v("max_frp")) chips.push([t("chip.frp", { range: range(v("min_frp"), v("max_frp")) }), ["min_frp", "max_frp"]]);
+  if (v("min_area") || v("max_area")) chips.push([t("chip.area", { range: range(v("min_area"), v("max_area")) }), ["min_area", "max_area"]]);
+  if (v("min_detections")) chips.push([t("chip.minDet", { n: v("min_detections") }), ["min_detections"]]);
+  if (v("status")) chips.push([v("status") === "active" ? t("chip.active") : t("chip.inactive"), ["status"]]);
+  if (v("lat") && v("lon") && v("radius_km")) chips.push([t("chip.near", { r: v("radius_km"), lat: Number(v("lat")).toFixed(2), lon: Number(v("lon")).toFixed(2) }), ["lat", "lon", "radius_km"]]);
   const box = $("#active-filters");
   box.classList.toggle("hidden", chips.length === 0);
   box.innerHTML = chips.length
-    ? `<span class="af-label">Filters:</span>${chips.map(([label, fields]) =>
-        `<button type="button" class="af-chip" data-clear="${fields.join(",")}" title="Remove this filter">${esc(label)} <span aria-hidden="true">✕</span></button>`).join("")}
-       <button type="button" class="af-clear">Clear all</button>`
+    ? `<span class="af-label">${t("chip.label")}</span>${chips.map(([label, fields]) =>
+        `<button type="button" class="af-chip" data-clear="${fields.join(",")}" title="${esc(t("chip.remove"))}">${esc(label)} <span aria-hidden="true">✕</span></button>`).join("")}
+       <button type="button" class="af-clear">${t("chip.clear")}</button>`
     : "";
 }
 $("#active-filters").addEventListener("click", (e) => {
@@ -560,6 +566,7 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) =>
     if (tab.dataset.tab === "calendar") void renderCalendar();
     if (tab.dataset.tab === "analysis") describeAnalysisScope();
     if (tab.dataset.tab === "alerts") void renderAlerts();
+    if (tab.dataset.tab === "guide") mountGuideTab($("#tab-guide"));
   }),
 );
 document.querySelectorAll<HTMLInputElement>('input[name="base"]').forEach((r) =>
@@ -588,9 +595,9 @@ function analysisTime(): Params {
 
 function describeAnalysisScope(): void {
   const period = timeMode === "latest"
-    ? `the last ${latestHours >= 48 ? `${latestHours / 24} days` : `${latestHours} h`}`
-    : dateInput("start").value === dateInput("end").value ? dateInput("start").value : `${dateInput("start").value} to ${dateInput("end").value}`;
-  $("#analysis-scope").textContent = `Period: ${period} (change it under Filters → Time). Area: what the globe shows when you press the button.`;
+    ? t("a.periodLast", { span: latestHours >= 48 ? t("a.periodDays", { n: latestHours / 24 }) : t("a.periodHours", { n: latestHours }) })
+    : dateInput("start").value === dateInput("end").value ? dateInput("start").value : t("a.periodRange", { from: dateInput("start").value, to: dateInput("end").value });
+  $("#analysis-scope").textContent = t("a.scope", { period });
 }
 
 let analysisKind: "stats" | "sensors" = "stats";
@@ -599,16 +606,19 @@ $("#analysis-kind").addEventListener("click", (e) => {
   if (!btn) return;
   analysisKind = btn.dataset.kind as typeof analysisKind;
   document.querySelectorAll("#analysis-kind button").forEach((b) => b.classList.toggle("active", b === btn));
+  clearAnalysis();
   $("#analysis-body").innerHTML = "";
 });
 $("#analysis-run").addEventListener("click", () => {
   describeAnalysisScope();
-  const run = analysisKind === "stats" ? runAnalysis : runSensors;
+  // the MODIS vs VIIRS comparison is part of the advanced view
+  const run = analysisKind === "sensors" && !isSimple() ? runSensors : runAnalysis;
   void run(globe.visibleBbox(), analysisTime());
 });
 wireAnalysis((id) => void openEvent(id));
 
 // ---------------------------------------------------------------- calendar
+let calDay: string | null = null;
 let calMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
 
 async function renderCalendar(): Promise<void> {
@@ -616,22 +626,22 @@ async function renderCalendar(): Promise<void> {
   const m = calMonth.getUTCMonth();
   const first = new Date(Date.UTC(y, m, 1));
   const last = new Date(Date.UTC(y, m + 1, 0));
-  $("#cal-title").textContent = first.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+  $("#cal-title").textContent = first.toLocaleDateString(locale(), { month: "long", year: "numeric", timeZone: "UTC" });
   let days: CalendarDay[] = [];
   try {
     days = await api.calendar({ start: isoDay(first), end: isoDay(last) });
   } catch (err) {
-    toast(`Calendar failed: ${(err as Error).message}`, "error");
+    toast(t("c.calFailed", { msg: (err as Error).message }), "error");
   }
   const max = Math.max(1, ...days.map((d) => d.detections));
   const offset = (first.getUTCDay() + 6) % 7; // weeks start on Monday
   const today = isoDay(new Date());
-  const cells = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map((d) => `<div class="dow">${d}</div>`);
+  const cells = t("c.dow").split(",").map((d) => `<div class="dow">${d}</div>`);
   for (let i = 0; i < offset; i++) cells.push("<div></div>");
   for (const d of days) {
-    const t = d.detections ? 0.15 + 0.85 * (Math.log(1 + d.detections) / Math.log(1 + max)) : 0;
+    const heat = d.detections ? 0.15 + 0.85 * (Math.log(1 + d.detections) / Math.log(1 + max)) : 0;
     cells.push(`<button type="button" class="day${d.date === today ? " today" : ""}" data-date="${d.date}"
-      style="--heat:${t.toFixed(3)}" title="${d.detections} detections · ${d.events_started} new events · max FRP ${fmtNum(d.max_frp_mw)} MW">
+      style="--heat:${heat.toFixed(3)}" title="${esc(t("c.cellTitle", { d: d.detections.toLocaleString(locale()), e: d.events_started, f: fmtNum(d.max_frp_mw) }))}">
       <span>${Number(d.date.slice(8))}</span>${d.events_started ? `<small>${d.events_started}</small>` : ""}</button>`);
   }
   $("#calendar").innerHTML = cells.join("");
@@ -642,14 +652,15 @@ $("#calendar").addEventListener("click", async (e) => {
   if (!day) return;
   setHistoryRange(day, day);
   setTimeMode("history");
-  $("#cal-day-title").textContent = `Fires on ${day}`;
+  calDay = day;
+  $("#cal-day-title").textContent = t("c.dayTitle", { day });
   try {
     const events = await api.events({ start: `${day}T00:00:00Z`, end: `${day}T23:59:59Z`, sort: "area", limit: 15 });
     $("#cal-events").innerHTML = events.length
       ? events.map((ev) => `<li><a href="#" data-event="${esc(ev.id)}">
-          <b>${fmtNum(ev.area_km2, 2)} km²</b> · ${ev.detection_count} det. · max ${fmtNum(ev.max_frp_mw, 0)} MW
+          <b>${fmtNum(ev.area_km2, 2)} km²</b> · ${ev.detection_count} ${t("c.det")} · max ${fmtNum(ev.max_frp_mw, 0)} MW
           <small>${ev.latitude.toFixed(2)}, ${ev.longitude.toFixed(2)} · ${statePill(ev)}</small></a></li>`).join("")
-      : '<li class="empty">No fire events that day.</li>';
+      : `<li class="empty">${t("c.noEvents")}</li>`;
   } catch (err) {
     toast((err as Error).message, "error");
   }
@@ -677,17 +688,17 @@ async function renderAlerts(): Promise<void> {
     globe.showAlertZones(rules);
     $("#rules").innerHTML = rules.length
       ? rules.map((r) => `<li><div><b>${esc(r.name)}</b>
-          <small>${r.radius_km ? `${fmtNum(r.radius_km, 0)} km around ${r.center_lat?.toFixed(2)}, ${r.center_lon?.toFixed(2)}` : "box zone"}
-          · conf ≥ ${esc(r.min_confidence)} · area ≥ ${r.min_area_km2} km²${r.webhook_url ? " · webhook" : ""}</small></div>
-          <button type="button" class="icon" data-delete-rule="${r.id}" aria-label="Delete rule">🗑</button></li>`).join("")
-      : '<li class="empty">No rules yet.</li>';
+          <small>${r.radius_km ? t("al.around", { r: fmtNum(r.radius_km, 0), lat: r.center_lat?.toFixed(2) ?? "", lon: r.center_lon?.toFixed(2) ?? "" }) : t("al.box")}
+          · ${t("al.ruleMeta", { c: esc(r.min_confidence), a: r.min_area_km2 })}${r.webhook_url ? " · webhook" : ""}</small></div>
+          <button type="button" class="icon" data-delete-rule="${r.id}" aria-label="${esc(t("al.delete"))}">🗑</button></li>`).join("")
+      : `<li class="empty">${t("al.noRules")}</li>`;
     $("#alerts").innerHTML = alerts.length
       ? alerts.map((a) => `<li class="sev-${a.severity}"><a href="#" data-event="${esc(a.event_id)}">
-          <span class="pill ${a.severity}">${a.severity}</span> ${esc(a.message)}
+          <span class="pill ${a.severity}">${esc(t(`sev.${a.severity}` as "sev.info"))}</span> ${esc(a.message)}
           <small>${esc(fmtTime(a.triggered_at))}</small></a></li>`).join("")
-      : '<li class="empty">No alerts. Rules fire on active events after each ingestion.</li>';
+      : `<li class="empty">${t("al.noAlerts")}</li>`;
   } catch (err) {
-    toast(`Alerts failed: ${(err as Error).message}`, "error");
+    toast(t("al.failed", { msg: (err as Error).message }), "error");
   }
 }
 
@@ -709,21 +720,21 @@ $<HTMLFormElement>("#rule-form").addEventListener("submit", async (e) => {
     Object.assign(rule, { center_lat: Number(ff.get("lat")), center_lon: Number(ff.get("lon")), radius_km: Number(ff.get("radius_km")) });
   } else {
     const bbox = globe.viewBbox();
-    if (!bbox) return toast("Point the camera at the Earth to define the zone.", "error");
+    if (!bbox) return toast(t("al.pointCamera"), "error");
     const [w, s, e, n] = bbox;
     const width = e >= w ? e - w : e - w + 360; // view may cross the antimeridian
     if (width > MAX_ZONE_DEG || n - s > MAX_ZONE_DEG) {
-      return toast(`Zoom in to the area to watch (view is ${Math.round(width)}° wide, max ${MAX_ZONE_DEG}°), or set a point + radius in Filters.`, "error");
+      return toast(t("al.zoomIn", { w: Math.round(width), max: MAX_ZONE_DEG }), "error");
     }
     [rule.west, rule.south, rule.east, rule.north] = bbox;
   }
   try {
     await api.createRule(rule);
     form.reset();
-    toast("Rule created. It is evaluated on every ingestion.");
+    toast(t("al.created"));
     await renderAlerts();
   } catch (err) {
-    toast(`Could not create rule: ${(err as Error).message}`, "error");
+    toast(t("al.createFailed", { msg: (err as Error).message }), "error");
   }
 });
 $("#rules").addEventListener("click", async (e) => {
@@ -760,14 +771,11 @@ function renderHistoryAvailability(): void {
   $("#history-controls").classList.toggle("hidden", !enabled);
   if (!health) return;
   if (health.data_source === "demo") {
-    coverage.textContent = "Demo mode: history uses real NASA data only. Start the API without FIRELENS_DEMO_MODE.";
+    coverage.textContent = t("c.demo");
   } else if (!enabled) {
-    coverage.innerHTML = `Showing real FIRMS data for <b>${esc(health.public_region.replaceAll("_", " "))}</b> from the public files
-      (last 7 days, refreshed hourly). To load older fires, add a free
-      <a href="https://firms.modaps.eosdis.nasa.gov/api/map_key/" target="_blank" rel="noopener">FIRMS MAP_KEY</a>
-      as <code>FIRELENS_FIRMS_MAP_KEY</code> in <code>.env</code> and restart the API.`;
+    coverage.innerHTML = t("c.noKey", { region: esc(health.public_region.replaceAll("_", " ")) });
   } else {
-    coverage.textContent = "Loads NASA's science-quality archive (SP) where available and near-real-time data for recent months.";
+    coverage.textContent = t("c.withKey");
   }
 }
 
@@ -777,7 +785,7 @@ function renderJob(job: BackfillJob): void {
   $(".bar", box).style.width = `${Math.round(job.progress * 100)}%`;
   const running = job.status === "queued" || job.status === "running";
   const parts = [
-    `<b>${esc(job.status)}</b> · ${job.done_chunks}/${job.total_chunks || "?"} requests · ${job.detections.toLocaleString()} detections`,
+    t("c.jobLine", { status: esc(job.status), done: job.done_chunks, total: job.total_chunks || "?", n: job.detections.toLocaleString(locale()) }),
     job.current ? esc(job.current) : "",
     ...job.notes.map(esc),
     ...job.errors.slice(-3).map((e) => `<span class="err">${esc(e)}</span>`),
@@ -798,14 +806,14 @@ function watchJob(id: string): void {
         return;
       }
       if (job.status === "done") {
-        const partial = job.failed_chunks ? ` (${job.failed_chunks} of ${job.total_chunks} requests failed)` : "";
-        toast(`History loaded: ${job.detections.toLocaleString()} detections${partial}.`, job.failed_chunks ? "error" : "info");
+        const partial = job.failed_chunks ? t("c.partial", { failed: job.failed_chunks, total: job.total_chunks }) : "";
+        toast(t("c.loaded", { n: job.detections.toLocaleString(locale()), partial }), job.failed_chunks ? "error" : "info");
       } else if (job.status === "failed") {
-        toast(`History load failed: ${job.errors.at(-1) ?? "no data returned"}`, "error");
+        toast(t("c.failed", { msg: job.errors.at(-1) ?? t("hb.noData") }), "error");
       }
       await Promise.all([renderCalendar(), refresh()]);
     } catch (err) {
-      toast(`Lost track of the history job: ${(err as Error).message}`, "error");
+      toast(t("c.lost", { msg: (err as Error).message }), "error");
     }
   };
   void tick();
@@ -820,7 +828,7 @@ historyForm.addEventListener("submit", async (e) => {
   };
   if (f.get("scope") === "view") {
     const bbox = globe.viewBbox();
-    if (!bbox || bbox[0] >= bbox[2]) return toast("Point the camera at the area to load (it can't cross the 180° meridian).", "error");
+    if (!bbox || bbox[0] >= bbox[2]) return toast(t("c.pointCamera"), "error");
     body.bbox = bbox.join(",");
   } else {
     body.country = String(f.get("country") || "ARG");
@@ -832,7 +840,7 @@ historyForm.addEventListener("submit", async (e) => {
     // land the calendar on the month being loaded
     calMonth = new Date(Date.UTC(Number(body.start.slice(0, 4)), Number(body.start.slice(5, 7)) - 1, 1));
   } catch (err) {
-    toast(`Could not start history load: ${(err as Error).message}`, "error");
+    toast(t("c.startFailed", { msg: (err as Error).message }), "error");
   }
 });
 $("#history-cancel").addEventListener("click", async () => {
@@ -842,25 +850,31 @@ $("#history-cancel").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------- boot
-const SOURCE_BADGE: Record<Health["data_source"], [string, string]> = {
-  demo: ["DEMO DATA", "Synthetic FIRMS-format data (FIRELENS_DEMO_MODE=true)."],
-  firms_public: ["LIVE · FIRMS", "Real NASA FIRMS data from the public files (last 7 days). Add a MAP_KEY for history."],
-  firms_api: ["LIVE · FIRMS + ARCHIVE", "Real NASA FIRMS data; MAP_KEY configured, history available."],
+const SOURCE_BADGE: Record<Health["data_source"], ["badge.demo" | "badge.public" | "badge.api", "badge.demoTitle" | "badge.publicTitle" | "badge.apiTitle"]> = {
+  demo: ["badge.demo", "badge.demoTitle"],
+  firms_public: ["badge.public", "badge.publicTitle"],
+  firms_api: ["badge.api", "badge.apiTitle"],
 };
 
 async function loadHealth(): Promise<void> {
   health = await api.health();
   if (health.event_active_hours) setActiveHours(health.event_active_hours);
-  const badge = $("#mode-badge");
-  const [label, title] = SOURCE_BADGE[health.data_source];
-  badge.textContent = health.seeding ? "LOADING REAL DATA…" : label;
-  badge.classList.toggle("demo", health.data_source === "demo");
-  badge.classList.toggle("seeding", health.seeding);
-  badge.title = `${title} Last ingest: ${health.last_ingest ? fmtTime(health.last_ingest) : "never"}.`;
+  renderBadge();
   renderHistoryAvailability();
   renderFreshness();
 }
 
+function renderBadge(): void {
+  if (!health) return;
+  const badge = $("#mode-badge");
+  const [label, title] = SOURCE_BADGE[health.data_source];
+  badge.textContent = health.seeding ? t("badge.loading") : t(label);
+  badge.classList.toggle("demo", health.data_source === "demo");
+  badge.classList.toggle("seeding", health.seeding);
+  badge.title = `${t(title)} ${t("badge.lastIngest", { when: health.last_ingest ? fmtTime(health.last_ingest) : t("badge.never") })}`;
+}
+
+wirePrefs();
 wireDetails((id) => void openEvent(id));
 wireHelp();
 wireLayout(() => globe.resize());
@@ -869,6 +883,32 @@ mountLegend($("#globe"));
 mountGuide($("#globe"), $("#guide-open"));
 globe.onHover(showMapTip);
 renderActiveFilters();
+// language or view changed: everything this file draws is drawn again from what it last showed
+/** The globe's zoom buttons are drawn by globe.ts; only their labels follow the language. */
+function labelZoomButtons(): void {
+  document.querySelectorAll<HTMLElement>("[data-zoom]").forEach((b) => {
+    const label = t(b.dataset.zoom === "in" ? "app.zoomIn" : "app.zoomOut");
+    b.title = label;
+    b.setAttribute("aria-label", label);
+  });
+}
+labelZoomButtons();
+onPrefsChange(() => {
+  labelZoomButtons();
+  renderStats(...lastStats);
+  renderTileStats();
+  renderActiveFilters();
+  renderFreshness();
+  renderBadge();
+  renderHistoryAvailability();
+  describeAnalysisScope();
+  const tab = document.querySelector<HTMLElement>(".tab.active")?.dataset.tab;
+  if (tab === "calendar") void renderCalendar();
+  if (tab === "alerts") void renderAlerts();
+  if (tab === "guide") mountGuideTab($("#tab-guide"));
+  if (calDay) $("#cal-day-title").textContent = t("c.dayTitle", { day: calDay });
+});
+describeAnalysisScope();
 (historyForm.elements.namedItem("end") as HTMLInputElement).value = isoDay(daysAgo(1));
 (historyForm.elements.namedItem("start") as HTMLInputElement).value = isoDay(daysAgo(30));
 (async () => {
@@ -883,7 +923,7 @@ renderActiveFilters();
     if (running) watchJob(running.id);
     if ((health as Health | null)?.history_enabled) await loadCountries();
   } catch {
-    toast("Backend not reachable on /api — is the API running on :8000?", "error");
+    toast(t("toast.backend"), "error");
   }
   await refresh();
   booted = true;

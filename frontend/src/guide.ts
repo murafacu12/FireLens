@@ -1,52 +1,18 @@
 // Making the map self-explanatory: plain-language help, an on-map legend, hover tooltips and a
-// short first-visit guide.
+// short first-visit guide. Every text comes from strings.ts (English / Spanish).
 import type { FireEvent } from "./api";
+import { locale, onPrefsChange, t, tn } from "./prefs";
+import type { Key } from "./strings";
 import { $, esc, fmtNum, fmtTime } from "./util";
 
 // ---------------------------------------------------------------- glossary ("?" buttons)
 
-export const GLOSSARY: Record<string, { title: string; text: string }> = {
-  detection: {
-    title: "Fire detection",
-    text: "One satellite pixel where a sensor saw unusual heat during one pass over the area. The same fire, seen by several satellites or on several passes, gives several detections.",
-  },
-  frp: {
-    title: "Fire power (FRP)",
-    text: "Fire Radiative Power: how much heat the fire was giving off at the moment the satellite passed, in megawatts (MW). Under 10 MW is a small fire; over 1,000 MW is extreme.",
-  },
-  confidence: {
-    title: "Detection confidence",
-    text: "How sure NASA's algorithm is that a hot pixel is a real fire. Low-confidence detections are often sun glint, hot bare ground or very small fires. By default all of them are shown, as on NASA's map; choose \"Nominal and high\" to hide the doubtful ones.",
-  },
-  sensors: {
-    title: "MODIS and VIIRS",
-    text: "The two fire sensors FireLens combines. MODIS flies on the Terra and Aqua satellites (1 km pixels, records since 2000). VIIRS flies on Suomi NPP, NOAA-20 and NOAA-21 (375 m pixels): it sees smaller fires.",
-  },
-  daynight: {
-    title: "Day or night pass",
-    text: "Whether the satellite passed in daylight or at night. Night passes catch fires that are hidden by smoke or sun glint during the day.",
-  },
-  event: {
-    title: "Fire event",
-    text: "Detections close together in space and time, grouped by FireLens into one fire. Its area is the footprint of the satellite pixels that saw fire. It is not the burned area, which FireLens does not measure.",
-  },
-  status: {
-    title: "Active / no recent detection",
-    text: "Active means the fire was detected in the last 24 hours. \"No recent detection\" does not mean the fire is out: clouds, smoke or the gap between satellite passes can hide it.",
-  },
-  freshness: {
-    title: "How fresh the data is",
-    text: "NASA publishes each satellite pass about 3 hours after the satellite flies over. FireLens checks NASA for new data every hour, and the map updates itself every 5 minutes.",
-  },
-  location: {
-    title: "Area filter",
-    text: "The map always shows what the globe is pointing at. Pick a point and a radius to look only at fires around a place, for example a town or a property.",
-  },
-  ndvi: {
-    title: "Vegetation (NDVI)",
-    text: "A satellite measure of how green the vegetation is. Green means dense, healthy plants; brown means sparse or dry vegetation, or bare ground.",
-  },
-};
+export const GLOSSARY_KEYS = ["detection", "frp", "confidence", "sensors", "daynight", "event", "status", "freshness", "location", "ndvi"] as const;
+export type GlossaryKey = (typeof GLOSSARY_KEYS)[number];
+
+const gTitle = (k: string) => t(`g.${k}.title` as Key);
+const gText = (k: string) => t(`g.${k}.text` as Key);
+const known = (k: string | undefined): k is GlossaryKey => !!k && (GLOSSARY_KEYS as readonly string[]).includes(k);
 
 const pop = document.createElement("div");
 pop.className = "help-pop hidden";
@@ -54,24 +20,30 @@ pop.setAttribute("role", "dialog");
 document.body.appendChild(pop);
 
 function showHelp(btn: HTMLElement): void {
-  const entry = GLOSSARY[btn.dataset.help ?? ""];
-  if (!entry) return;
-  pop.innerHTML = `<b>${esc(entry.title)}</b><p>${esc(entry.text)}</p>`;
+  const key = btn.dataset.help;
+  if (!known(key)) return;
+  pop.innerHTML = `<b>${esc(gTitle(key))}</b><p>${esc(gText(key))}</p>`;
   pop.classList.remove("hidden");
   const r = btn.getBoundingClientRect();
   const x = Math.min(r.left, window.innerWidth - pop.offsetWidth - 12);
   const below = r.bottom + 8 + pop.offsetHeight < window.innerHeight;
   pop.style.left = `${Math.max(12, x)}px`;
   pop.style.top = `${below ? r.bottom + 8 : r.top - pop.offsetHeight - 8}px`;
-  pop.dataset.for = btn.dataset.help;
+  pop.dataset.for = key;
+}
+
+function labelHelpButtons(): void {
+  document.querySelectorAll<HTMLElement>("button[data-help]").forEach((b) => {
+    if (known(b.dataset.help)) b.setAttribute("aria-label", t("app.explain", { what: gTitle(b.dataset.help) }));
+  });
 }
 
 /** "?" buttons anywhere in the page open a short explanation; a click elsewhere or Esc closes it. */
 export function wireHelp(): void {
-  // static "?" buttons in the page get the same accessible name as generated ones
-  document.querySelectorAll<HTMLElement>("button[data-help]").forEach((b) => {
-    const t = GLOSSARY[b.dataset.help ?? ""]?.title;
-    if (t) b.setAttribute("aria-label", `Explain: ${t}`);
+  labelHelpButtons();
+  onPrefsChange(() => {
+    labelHelpButtons();
+    pop.classList.add("hidden");
   });
   document.addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-help]");
@@ -87,18 +59,20 @@ export function wireHelp(): void {
   document.addEventListener("keydown", (e) => e.key === "Escape" && pop.classList.add("hidden"));
 }
 
-export const helpButton = (key: string) =>
-  `<button type="button" class="help" data-help="${key}" aria-label="Explain: ${esc(GLOSSARY[key]?.title ?? key)}">?</button>`;
+export const helpButton = (key: GlossaryKey) =>
+  `<button type="button" class="help" data-help="${key}" aria-label="${esc(t("app.explain", { what: gTitle(key) }))}">?</button>`;
 
 // ---------------------------------------------------------------- fire power in words
 
-export function powerWord(mw: number | null | undefined): string {
+export type PowerLevel = "small" | "moderate" | "intense" | "extreme";
+export function powerLevel(mw: number | null | undefined): PowerLevel {
   const v = mw ?? 0;
   if (v < 10) return "small";
   if (v < 100) return "moderate";
   if (v < 1000) return "intense";
   return "extreme";
 }
+export const powerWord = (mw: number | null | undefined) => t(`power.${powerLevel(mw)}` as Key);
 
 // ---------------------------------------------------------------- hover tooltip
 
@@ -111,30 +85,29 @@ export type HoverTarget =
   | { kind: "detection"; id: string; frp?: number | null; viirs?: boolean; t?: number; conf?: number }
   | { kind: "event"; event: FireEvent | undefined; eventId: string };
 
-const CONF = ["low", "nominal", "high"];
+const CONF: Key[] = ["tip.confLow", "tip.confNominal", "tip.confHigh"];
 
 function describe(h: HoverTarget): string {
   if (h.kind === "cell") {
-    const km = Math.round(h.cellDeg * 111);
-    return `<b>${h.count.toLocaleString()} fire detection${h.count === 1 ? "" : "s"}</b>
-      <div>grouped in an area about ${km} km across</div>
-      ${h.maxFrp != null ? `<div>strongest: ${fmtNum(h.maxFrp, 0)} MW (${powerWord(h.maxFrp)})</div>` : ""}
-      <small>Click to zoom in</small>`;
+    return `<b>${esc(tn("tip.cell", h.count))}</b>
+      <div>${esc(t("tip.cellArea", { km: Math.round(h.cellDeg * 111) }))}</div>
+      ${h.maxFrp != null ? `<div>${esc(t("tip.strongest", { mw: fmtNum(h.maxFrp, 0), word: powerWord(h.maxFrp) }))}</div>` : ""}
+      <small>${t("tip.zoom")}</small>`;
   }
   if (h.kind === "detection") {
-    return `<b>${h.viirs ? "VIIRS" : "MODIS"} fire detection</b>
+    return `<b>${esc(t("tip.detection", { sensor: h.viirs ? "VIIRS" : "MODIS" }))}</b>
       ${h.t ? `<div>${esc(fmtTime(new Date(h.t * 1000).toISOString()))}</div>` : ""}
-      ${h.frp != null ? `<div>fire power ${fmtNum(h.frp, 1)} MW (${powerWord(h.frp)})</div>` : ""}
-      ${h.conf != null ? `<div>${CONF[h.conf] ?? ""} confidence</div>` : ""}
-      <small>Click for details</small>`;
+      ${h.frp != null ? `<div>${esc(t("tip.power", { mw: fmtNum(h.frp, 1), word: powerWord(h.frp) }))}</div>` : ""}
+      ${h.conf != null && CONF[h.conf] ? `<div>${esc(t(CONF[h.conf]))}</div>` : ""}
+      <small>${t("tip.details")}</small>`;
   }
   const ev = h.event;
-  if (!ev) return `<b>Fire event</b><small>Click for details</small>`;
-  const state = ev.lifecycle_state === "active" ? "active" : ev.lifecycle_state === "reactivated" ? "flared up again" : "no recent detection";
-  return `<b>Fire event · ${state}</b>
-    <div>${ev.detection_count.toLocaleString()} detections over ${fmtNum(ev.observed_hours ?? 0, 0)} h</div>
-    <div>footprint ${fmtNum(ev.area_km2, ev.area_km2 < 10 ? 2 : 0)} km² · peak ${fmtNum(ev.peak_pass_frp_mw ?? ev.max_frp_mw, 0)} MW</div>
-    <small>Click for details</small>`;
+  if (!ev) return `<b>${t("tip.event")}</b><small>${t("tip.details")}</small>`;
+  const state = ev.lifecycle_state === "active" ? t("tip.stActive") : ev.lifecycle_state === "reactivated" ? t("tip.stReactivated") : t("tip.stInactive");
+  return `<b>${esc(t("tip.eventState", { state }))}</b>
+    <div>${esc(t("tip.eventDets", { n: ev.detection_count.toLocaleString(locale()), h: fmtNum(ev.observed_hours ?? 0, 0) }))}</div>
+    <div>${esc(t("tip.eventSize", { area: fmtNum(ev.area_km2, ev.area_km2 < 10 ? 2 : 0), mw: fmtNum(ev.peak_pass_frp_mw ?? ev.max_frp_mw, 0) }))}</div>
+    <small>${t("tip.details")}</small>`;
 }
 
 export function showMapTip(h: HoverTarget | null, x: number, y: number): void {
@@ -169,35 +142,41 @@ const storage = {
   },
 };
 
+function legendHtml(open: boolean): string {
+  return `
+    <button type="button" class="legend-toggle" aria-expanded="${open}">${t("lg.title")} <span aria-hidden="true">▾</span></button>
+    <div class="legend-body">
+      <div class="legend-title">${t("lg.power")} ${helpButton("frp")}</div>
+      <div class="ramp"></div>
+      <div class="ramp-labels"><span>${t("power.small")}</span><span>${t("power.moderate")}</span><span>${t("power.intense")}</span><span>${t("power.extreme")}</span></div>
+      <div class="ramp-labels mw"><span>1 MW</span><span>10</span><span>100</span><span>1000+</span></div>
+      <ul class="legend-keys">
+        <li><span class="dot bubble">12</span> ${t("lg.group")}</li>
+        <li><span class="dot viirs"></span><span class="dot modis"></span> ${t("lg.one")} ${helpButton("sensors")}</li>
+        <li><span class="ring active"></span><span class="ring inactive"></span> ${t("lg.event")} ${helpButton("event")}</li>
+      </ul>
+    </div>`;
+}
+
 export function mountLegend(container: HTMLElement): void {
   const el = document.createElement("section");
   el.className = "map-legend";
-  el.setAttribute("aria-label", "Map legend");
-  el.innerHTML = `
-    <button type="button" class="legend-toggle" aria-expanded="true">Legend <span aria-hidden="true">▾</span></button>
-    <div class="legend-body">
-      <div class="legend-title">Fire power ${helpButton("frp")}</div>
-      <div class="ramp"></div>
-      <div class="ramp-labels"><span>small</span><span>moderate</span><span>intense</span><span>extreme</span></div>
-      <div class="ramp-labels mw"><span>1 MW</span><span>10</span><span>100</span><span>1000+</span></div>
-      <ul class="legend-keys">
-        <li><span class="dot bubble">12</span> Group of detections: the number counts them. Click to zoom in.</li>
-        <li><span class="dot viirs"></span><span class="dot modis"></span> One detection: white ring VIIRS, dark ring MODIS ${helpButton("sensors")}</li>
-        <li><span class="ring active"></span><span class="ring inactive"></span> Fire event: orange active, brown no recent detection ${helpButton("event")}</li>
-      </ul>
-    </div>`;
   container.appendChild(el);
-  const toggle = $<HTMLButtonElement>(".legend-toggle", el);
-  const set = (open: boolean) => {
-    el.classList.toggle("collapsed", !open);
-    toggle.setAttribute("aria-expanded", String(open));
-    storage.set("firelens.legend", open ? "open" : "closed");
-  };
   const saved = storage.get("firelens.legend");
   // first visit: open on wide screens, collapsed on phones where it would cover the map
-  el.classList.toggle("collapsed", saved ? saved === "closed" : window.innerWidth < 760);
-  toggle.setAttribute("aria-expanded", String(!el.classList.contains("collapsed")));
-  toggle.addEventListener("click", () => set(el.classList.contains("collapsed")));
+  let open = saved ? saved === "open" : window.innerWidth >= 760;
+  const draw = () => {
+    el.setAttribute("aria-label", t("lg.title"));
+    el.innerHTML = legendHtml(open);
+    el.classList.toggle("collapsed", !open);
+    $<HTMLButtonElement>(".legend-toggle", el).addEventListener("click", () => {
+      open = !open;
+      storage.set("firelens.legend", open ? "open" : "closed");
+      draw();
+    });
+  };
+  draw();
+  onPrefsChange(draw);
 }
 
 // ---------------------------------------------------------------- first-visit guide
@@ -205,22 +184,30 @@ export function mountLegend(container: HTMLElement): void {
 export function mountGuide(container: HTMLElement, reopen: HTMLElement): void {
   const el = document.createElement("section");
   el.className = "map-guide hidden";
-  el.setAttribute("aria-label", "How to read this map");
-  el.innerHTML = `
-    <h2>How to read this map</h2>
-    <ol>
-      <li><b>Each mark is fire seen from space</b> by NASA satellites. Zoomed out, nearby detections are grouped into numbered bubbles.</li>
-      <li><b>Colour shows fire power:</b> yellow is a small fire, red and purple are intense ones.</li>
-      <li><b>Hover over anything</b> for a quick summary, <b>click</b> for details or to zoom in. Scroll or pinch to zoom.</li>
-      <li><b>The left panel</b> chooses the period (latest data or history) and filters what you see. Look for the <span class="help static">?</span> buttons for plain-language explanations.</li>
-    </ol>
-    <div class="actions"><button type="button" class="guide-close">Got it</button></div>`;
   container.appendChild(el);
+  const draw = () => {
+    el.setAttribute("aria-label", t("mg.title"));
+    el.innerHTML = `
+      <h2>${t("mg.title")}</h2>
+      <ol>
+        <li>${t("mg.s1")}</li>
+        <li>${t("mg.s2")}</li>
+        <li>${t("mg.s3")}</li>
+        <li>${t("mg.s4")}</li>
+      </ol>
+      <div class="actions"><button type="button" class="secondary guide-more">${t("mg.more")}</button><button type="button" class="guide-close">${t("mg.ok")}</button></div>`;
+    $(".guide-close", el).addEventListener("click", () => open(false));
+    $(".guide-more", el).addEventListener("click", () => {
+      open(false);
+      document.querySelector<HTMLButtonElement>('.tab[data-tab="guide"]')?.click();
+    });
+  };
   const open = (v: boolean) => {
     el.classList.toggle("hidden", !v);
     if (!v) storage.set("firelens.guide", "seen");
   };
-  $(".guide-close", el).addEventListener("click", () => open(false));
+  draw();
+  onPrefsChange(draw);
   reopen.addEventListener("click", () => open(el.classList.contains("hidden")));
   if (storage.get("firelens.guide") !== "seen") open(true);
 }
