@@ -134,6 +134,8 @@ details.history summary { cursor: pointer; color: var(--muted); }
 .segmented { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; margin-bottom: 10px; }
 .segmented button { flex: 1; background: none; border: none; color: var(--muted); font-weight: 500; padding: 6px; border-radius: 6px; }
 .segmented button.active { background: var(--panel-2); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+/* one rule for every component: anything marked .hidden is not shown */
+.hidden { display: none !important; }
 #mode-latest.hidden, #mode-history.hidden, .banner.hidden, .banner .hidden { display: none; }
 .chips button.active { border-color: var(--accent); color: var(--accent-2); }
 .chips { flex-wrap: wrap; margin-bottom: 6px; }
@@ -226,3 +228,68 @@ table.risk td { padding: 4px; border-bottom: 1px solid var(--line); }
 .chart .identity { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .chart .id-label { font-style: italic; }
 #analysis-kind { margin-bottom: 8px; }
+
+/* ------------------------------------------------------------- understanding the map */
+.brand-side { display: flex; align-items: center; gap: 8px; }
+.guide-btn, .help { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; padding: 0;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); font-weight: 700; cursor: pointer; }
+.guide-btn { width: 26px; height: 26px; font-size: 14px; }
+.help { width: 17px; height: 17px; font-size: 11px; margin-left: 4px; vertical-align: middle; line-height: 1; }
+.help:hover, .guide-btn:hover { color: var(--text); border-color: var(--muted); filter: none; }
+.help.static { cursor: default; }
+legend .help { text-transform: none; }
+label > span { display: inline-flex; align-items: center; }
+.help-pop { position: fixed; z-index: 60; max-width: 300px; background: #0b1118; border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; font-size: 13px; line-height: 1.45; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55); }
+.help-pop b { display: block; margin-bottom: 4px; }
+.help-pop p { margin: 0; color: var(--muted); }
+
+.map-tip { position: fixed; z-index: 40; pointer-events: none; max-width: 260px; background: rgba(11, 17, 24, 0.95);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.45;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }
+.map-tip b { display: block; font-size: 13px; margin-bottom: 2px; }
+.map-tip div { color: var(--text); font-variant-numeric: tabular-nums; }
+.map-tip small { display: block; margin-top: 4px; color: var(--muted); }
+
+.map-legend { position: absolute; left: 12px; bottom: 34px; z-index: 5; width: 250px; background: rgba(19, 26, 35, 0.94);
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
+.map-legend.collapsed { width: auto; }
+.map-legend.collapsed .legend-body { display: none; }
+.legend-toggle { background: none; border: none; color: var(--text); font-weight: 600; padding: 0; font-size: 12px; cursor: pointer; }
+.legend-toggle span { color: var(--muted); }
+.map-legend.collapsed .legend-toggle span { display: inline-block; transform: rotate(-90deg); }
+.legend-title { margin: 8px 0 4px; color: var(--muted); display: flex; align-items: center; }
+.ramp-labels.mw { margin-top: 0; opacity: 0.7; }
+.legend-keys { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; color: var(--muted); }
+.legend-keys li { display: flex; align-items: center; gap: 6px; line-height: 1.3; }
+.legend-keys .dot { flex: none; }
+.ring { flex: none; display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #ff5a1f; background: rgba(255, 90, 31, 0.28); }
+.ring.inactive { border-color: #9a7b5c; background: rgba(154, 123, 92, 0.18); }
+
+.map-guide { position: absolute; left: 12px; top: 12px; z-index: 6; width: min(360px, calc(100% - 24px));
+  background: rgba(19, 26, 35, 0.97); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55); font-size: 13px; line-height: 1.5; }
+.map-guide h2 { margin: 0 0 8px; font-size: 15px; }
+.map-guide ol { margin: 0 0 10px; padding-left: 18px; display: grid; gap: 6px; color: var(--muted); }
+.map-guide ol b { color: var(--text); }
+.map-guide .actions { justify-content: flex-end; }
+
+.active-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 16px 10px; }
+.af-label { color: var(--muted); font-size: 12px; }
+.af-chip, .af-clear { background: var(--panel-2); border: 1px solid var(--accent); color: var(--text); font-weight: 500;
+  font-size: 12px; border-radius: 999px; padding: 3px 9px; }
+.af-chip span { color: var(--muted); margin-left: 2px; }
+.af-chip:hover span { color: var(--text); }
+.af-clear { border-color: var(--line); color: var(--muted); }
+
+.sat-label { font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+.toggle-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.toggle-chips label { flex: none; flex-direction: row; margin: 0; cursor: pointer; }
+.toggle-chips input { position: absolute; opacity: 0; pointer-events: none; }
+.toggle-chips span { display: inline-block; border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+.toggle-chips input:checked + span { border-color: var(--accent); background: #3b1a0c; }
+.toggle-chips input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 760px) {
+  .map-legend { width: 200px; bottom: 30px; }
+}

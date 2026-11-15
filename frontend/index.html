@@ -14,9 +14,13 @@
             <h1>FIRELENS</h1>
             <p class="tagline">MODIS + VIIRS harmonized fire intelligence</p>
           </div>
-          <span id="mode-badge" class="badge">…</span>
+          <div class="brand-side">
+            <span id="mode-badge" class="badge">…</span>
+            <button type="button" id="guide-open" class="guide-btn" aria-label="How to read this map" title="How to read this map">?</button>
+          </div>
         </header>
         <div id="stats" class="stats"></div>
+        <div id="active-filters" class="active-filters hidden" aria-live="polite"></div>
 
         <nav class="tabs" role="tablist">
           <button class="tab active" data-tab="filters" role="tab">Filters</button>
@@ -66,55 +70,55 @@
             </fieldset>
 
             <fieldset>
-              <legend>Sensor</legend>
+              <legend>Sensor <button type="button" class="help" data-help="sensors" aria-label="Explain">?</button></legend>
               <div class="row checks">
                 <label><input type="checkbox" name="instrument" value="MODIS" checked /> MODIS <small>1 km</small></label>
                 <label><input type="checkbox" name="instrument" value="VIIRS" checked /> VIIRS <small>375 m</small></label>
               </div>
-              <small class="hint">Applies instantly: MODIS and VIIRS are stored and drawn as separate layers.</small>
-              <label>Satellite
-                <select name="satellite" multiple size="5">
-                  <option>Terra</option><option>Aqua</option><option>Suomi NPP</option><option>NOAA-20</option><option>NOAA-21</option>
-                </select>
-              </label>
-              <small class="hint">None selected = all. Ctrl/Cmd-click for several.</small>
+              <div class="sat-label">Satellites <small>(none ticked = all)</small></div>
+              <div class="toggle-chips">
+                <label><input type="checkbox" name="satellite" value="Terra" /><span>Terra</span></label>
+                <label><input type="checkbox" name="satellite" value="Aqua" /><span>Aqua</span></label>
+                <label><input type="checkbox" name="satellite" value="Suomi NPP" /><span>Suomi NPP</span></label>
+                <label><input type="checkbox" name="satellite" value="NOAA-20" /><span>NOAA-20</span></label>
+                <label><input type="checkbox" name="satellite" value="NOAA-21" /><span>NOAA-21</span></label>
+              </div>
             </fieldset>
 
             <fieldset>
               <legend>Detection</legend>
               <div class="row">
-                <label>Min confidence
+                <label><span>Confidence <button type="button" class="help" data-help="confidence" aria-label="Explain">?</button></span>
                   <select name="min_confidence">
-                    <option value="">Any</option><option value="nominal" selected>Nominal+</option><option value="high">High</option>
+                    <option value="">Any (incl. doubtful)</option><option value="nominal" selected>Nominal and high</option><option value="high">High only</option>
                   </select>
                 </label>
-                <label>Day / night
+                <label><span>Day / night <button type="button" class="help" data-help="daynight" aria-label="Explain">?</button></span>
                   <select name="daynight"><option value="">Both</option><option value="D">Day</option><option value="N">Night</option></select>
                 </label>
               </div>
               <div class="row">
-                <label>FRP min (MW) <input type="number" name="min_frp" min="0" step="any" /></label>
-                <label>FRP max (MW) <input type="number" name="max_frp" min="0" step="any" /></label>
+                <label><span>Fire power min <button type="button" class="help" data-help="frp" aria-label="Explain">?</button></span> <input type="number" name="min_frp" min="0" step="any" placeholder="MW" /></label>
+                <label><span>Fire power max</span> <input type="number" name="max_frp" min="0" step="any" placeholder="MW" /></label>
               </div>
             </fieldset>
 
             <fieldset>
-              <legend>Fire event (size)</legend>
+              <legend>Fire events <button type="button" class="help" data-help="event" aria-label="Explain">?</button></legend>
               <div class="row">
-                <label>Area min (km²) <input type="number" name="min_area" min="0" step="any" /></label>
-                <label>Area max (km²) <input type="number" name="max_area" min="0" step="any" /></label>
+                <label>Footprint min <input type="number" name="min_area" min="0" step="any" placeholder="km²" /></label>
+                <label>Footprint max <input type="number" name="max_area" min="0" step="any" placeholder="km²" /></label>
               </div>
               <div class="row">
                 <label>Min detections <input type="number" name="min_detections" min="1" step="1" /></label>
-                <label>Status
+                <label><span>Status <button type="button" class="help" data-help="status" aria-label="Explain">?</button></span>
                   <select name="status"><option value="">All</option><option value="active">Active</option><option value="inactive">No recent detection</option></select>
                 </label>
               </div>
             </fieldset>
 
             <fieldset>
-              <legend>Location</legend>
-              <p class="hint">The map always shows what's in view. A point + radius narrows it further.</p>
+              <legend>Around a place <button type="button" class="help" data-help="location" aria-label="Explain">?</button></legend>
               <div class="row">
                 <label>Lat <input type="number" name="lat" step="any" min="-90" max="90" /></label>
                 <label>Lon <input type="number" name="lon" step="any" min="-180" max="180" /></label>
@@ -123,9 +127,9 @@
               <button type="button" id="pick-point" class="secondary">Pick point on globe</button>
             </fieldset>
 
+            <p class="hint">Changes apply as you make them.</p>
             <div class="actions">
-              <button type="submit">Apply filters</button>
-              <button type="reset" class="secondary">Reset</button>
+              <button type="reset" class="secondary">Reset all filters</button>
             </div>
           </form>
         </section>
@@ -140,19 +144,14 @@
           </fieldset>
           <fieldset>
             <legend>Overlays</legend>
-            <label class="inline"><input type="checkbox" id="lyr-detections" checked /> Fire detections (colour = FRP)</label>
-            <label class="inline"><input type="checkbox" id="lyr-events" checked /> Fire events (size = footprint area)</label>
+            <label class="inline"><input type="checkbox" id="lyr-detections" checked /> Fire detections (colour = fire power)</label>
+            <label class="inline"><input type="checkbox" id="lyr-events" checked /> Fire events (circle size = footprint)</label>
             <label class="inline"><input type="checkbox" id="lyr-zones" checked /> Alert zones</label>
-            <label class="inline"><input type="checkbox" id="lyr-ndvi" /> Vegetation NDVI (VIIRS 8-day, NASA GIBS)</label>
+            <label class="inline"><input type="checkbox" id="lyr-ndvi" /> Vegetation greenness (NDVI, 8-day) <button type="button" class="help" data-help="ndvi" aria-label="Explain">?</button></label>
             <label class="inline"><input type="checkbox" id="lyr-static" /> Non-fire heat sources (gas flares, volcanoes, offshore platforms)</label>
             <p class="hint">Hidden by default: the NASA archive labels them, and FireLens also marks near-real-time detections on those sites. They never form fire events or trigger alerts.</p>
           </fieldset>
-          <div class="legend">
-            <div class="ramp"></div>
-            <div class="ramp-labels"><span>1 MW</span><span>10</span><span>100</span><span>1000+ MW</span></div>
-            <p><span class="dot viirs"></span> VIIRS 375 m &nbsp; <span class="dot modis"></span> MODIS 1 km</p>
-            <p><span class="dot bubble">12</span> Zoomed out: grouped detections (number = count, colour = strongest fire). Click to zoom in.</p>
-          </div>
+          <p class="hint">The legend is on the map, bottom left.</p>
         </section>
 
         <section id="tab-analysis" class="panel">

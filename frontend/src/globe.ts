@@ -33,7 +33,8 @@ import "cesium/Build/Cesium/Widgets/widgets.css";
 
 import type { AlertRule, CompactDetections, FireEvent } from "./api";
 import { batch, instance, MARKER_HEIGHT_M, NO_DEPTH_TEST_WITHIN_M, RAMP, rampIndex } from "./render";
-import { FireTiles, type Lod, MAX_CELL_LEVEL, MIN_LEVEL, POINT_ZOOM, renderEvents, TILE_SHIFT } from "./tiles";
+import type { HoverTarget } from "./guide";
+import { drawnEvents, FireTiles, type Lod, MAX_CELL_LEVEL, MIN_LEVEL, POINT_ZOOM, renderEvents, TILE_SHIFT } from "./tiles";
 
 export type BaseLayerId = "esri" | "osm" | "gibs";
 export type PickResult =
@@ -172,6 +173,46 @@ export class Globe {
         onPick({ kind: "point", lat: CesiumMath.toDegrees(c.latitude), lon: CesiumMath.toDegrees(c.longitude) });
       }
     }, ScreenSpaceEventType.LEFT_CLICK);
+
+    // Hover: describe what is under the pointer (at most once per animation frame).
+    let pending: Cartesian2 | null = null;
+    handler.setInputAction((e: { endPosition: Cartesian2 }) => {
+      if (!pending) {
+        requestAnimationFrame(() => {
+          const p = pending;
+          pending = null;
+          this.hover(p);
+        });
+      }
+      pending = Cartesian2.clone(e.endPosition);
+    }, ScreenSpaceEventType.MOUSE_MOVE);
+    scene.canvas.addEventListener("mouseleave", () => {
+      pending = null;
+      this.hoverListener?.(null, 0, 0);
+      scene.canvas.style.cursor = "";
+    });
+  }
+
+  private hoverListener: ((h: HoverTarget | null, x: number, y: number) => void) | null = null;
+
+  /** Called with what the pointer is over (or null), in page coordinates. */
+  onHover(fn: (h: HoverTarget | null, x: number, y: number) => void): void {
+    this.hoverListener = fn;
+  }
+
+  private hover(pos: Cartesian2 | null): void {
+    const scene = this.viewer.scene;
+    if (!pos || !this.hoverListener) return;
+    const id: unknown = scene.pick(pos)?.id;
+    let target: HoverTarget | null = null;
+    if (typeof id === "string" && id.startsWith("evt_")) target = { kind: "event", eventId: id, event: drawnEvents.get(id) };
+    else if (id && typeof id === "object" && "kind" in id) {
+      const k = (id as { kind: string }).kind;
+      if (k === "cell" || k === "detection") target = id as HoverTarget;
+    }
+    const rect = scene.canvas.getBoundingClientRect();
+    scene.canvas.style.cursor = target ? "pointer" : "";
+    this.hoverListener(target, rect.left + pos.x, rect.top + pos.y);
   }
 
   private setupZoomControls(): void {

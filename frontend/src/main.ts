@@ -4,6 +4,7 @@ import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health,
 import { runAnalysis, runSensors, wireAnalysis } from "./analysis";
 import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
+import { helpButton, mountGuide, mountLegend, showMapTip, wireHelp } from "./guide";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
 
 const filtersForm = $<HTMLFormElement>("#filters");
@@ -190,8 +191,7 @@ function renderFreshness(): void {
   }
   const ageMin = Math.max(0, Math.round((Date.now() - new Date(health.latest_detection_at).getTime()) / 60_000));
   const age = ageMin < 60 ? `${ageMin} min` : `${Math.floor(ageMin / 60)} h ${ageMin % 60} min`;
-  const pulls = health.refresh_minutes ? ` FireLens pulls NASA every ${health.refresh_minutes} min;` : "";
-  el.textContent = `Newest satellite pass: ${age} ago (${fmtTime(health.latest_detection_at)}).${pulls} the map refreshes itself every ${AUTO_REFRESH_MS / 60_000} min. NASA publishes passes ~3 h after the satellite flies over.`;
+  el.innerHTML = `Latest satellite data: <b>${age} ago</b> <small>(${esc(fmtTime(health.latest_detection_at))})</small> ${helpButton("freshness")}`;
 }
 window.setInterval(renderFreshness, 30_000);
 window.setInterval(async () => {
@@ -458,21 +458,85 @@ filtersForm.querySelectorAll<HTMLInputElement>('input[name="instrument"]').forEa
   }),
 );
 
-filtersForm.addEventListener("submit", (e) => {
-  e.preventDefault();
+// Filters apply as they change (number fields after a short pause in typing).
+function applyFilters(): void {
   focusEventId = null;
   const f = new FormData(filtersForm);
   const lat = Number(f.get("lat"));
   const lon = Number(f.get("lon"));
   const r = Number(f.get("radius_km"));
   globe.pin(f.get("lat") ? lat : null, f.get("lon") ? lon : null, r || undefined);
+  renderActiveFilters();
   void refresh();
+}
+const HANDLED_ELSEWHERE = new Set(["instrument", "start", "end"]);
+let typingTimer: number | undefined;
+filtersForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  applyFilters();
+});
+filtersForm.addEventListener("change", (e) => {
+  const el = e.target as HTMLInputElement;
+  if (HANDLED_ELSEWHERE.has(el.name)) return renderActiveFilters();
+  window.clearTimeout(typingTimer);
+  applyFilters();
+});
+filtersForm.addEventListener("input", (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.type !== "number") return;
+  window.clearTimeout(typingTimer);
+  typingTimer = window.setTimeout(applyFilters, 600);
 });
 filtersForm.addEventListener("reset", () => {
   window.setTimeout(() => {
     globe.pin(null, null);
+    renderActiveFilters();
     setTimeMode("latest");
   });
+});
+
+/** What is currently narrowing the map, as removable chips under the stats. */
+function renderActiveFilters(): void {
+  const f = new FormData(filtersForm);
+  const v = (k: string) => ((f.get(k) as string | null) ?? "").trim();
+  const chips: [string, string[]][] = [];
+  const conf = v("min_confidence");
+  if (conf !== "nominal") chips.push([conf === "high" ? "High confidence only" : "Including doubtful detections", ["min_confidence"]]);
+  const ins = f.getAll("instrument");
+  if (ins.length === 1) chips.push([`${ins[0]} only`, ["instrument"]]);
+  if (ins.length === 0) chips.push(["No sensor selected", ["instrument"]]);
+  const sats = f.getAll("satellite") as string[];
+  if (sats.length) chips.push([`Satellites: ${sats.join(", ")}`, ["satellite"]]);
+  if (v("daynight")) chips.push([v("daynight") === "D" ? "Day passes" : "Night passes", ["daynight"]]);
+  if (v("min_frp") || v("max_frp")) chips.push([`Fire power ${v("min_frp") ? `≥ ${v("min_frp")}` : ""}${v("min_frp") && v("max_frp") ? " and " : ""}${v("max_frp") ? `≤ ${v("max_frp")}` : ""} MW`, ["min_frp", "max_frp"]]);
+  if (v("min_area") || v("max_area")) chips.push([`Footprint ${v("min_area") ? `≥ ${v("min_area")}` : ""}${v("min_area") && v("max_area") ? " and " : ""}${v("max_area") ? `≤ ${v("max_area")}` : ""} km²`, ["min_area", "max_area"]]);
+  if (v("min_detections")) chips.push([`Events with ≥ ${v("min_detections")} detections`, ["min_detections"]]);
+  if (v("status")) chips.push([v("status") === "active" ? "Active fires only" : "No recent detection only", ["status"]]);
+  if (v("lat") && v("lon") && v("radius_km")) chips.push([`Within ${v("radius_km")} km of ${Number(v("lat")).toFixed(2)}, ${Number(v("lon")).toFixed(2)}`, ["lat", "lon", "radius_km"]]);
+  const box = $("#active-filters");
+  box.classList.toggle("hidden", chips.length === 0);
+  box.innerHTML = chips.length
+    ? `<span class="af-label">Filters:</span>${chips.map(([label, fields]) =>
+        `<button type="button" class="af-chip" data-clear="${fields.join(",")}" title="Remove this filter">${esc(label)} <span aria-hidden="true">✕</span></button>`).join("")}
+       <button type="button" class="af-clear">Clear all</button>`
+    : "";
+}
+$("#active-filters").addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest(".af-clear")) return filtersForm.reset();
+  const fields = t.closest<HTMLElement>("[data-clear]")?.dataset.clear?.split(",");
+  if (!fields) return;
+  for (const name of fields) {
+    filtersForm.querySelectorAll<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`).forEach((el) => {
+      if (el instanceof HTMLInputElement && el.type === "checkbox") el.checked = name === "instrument";
+      else if (el instanceof HTMLSelectElement) el.value = name === "min_confidence" ? "nominal" : "";
+      else el.value = "";
+    });
+  }
+  if (fields.includes("instrument")) {
+    filtersForm.querySelector<HTMLInputElement>('input[name="instrument"]')?.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  applyFilters();
 });
 $("#pick-point").addEventListener("click", () => setPicking(true));
 document.addEventListener("keydown", (e) => {
@@ -792,6 +856,11 @@ async function loadHealth(): Promise<void> {
 }
 
 wireDetails((id) => void openEvent(id));
+wireHelp();
+mountLegend($("#globe"));
+mountGuide($("#globe"), $("#guide-open"));
+globe.onHover(showMapTip);
+renderActiveFilters();
 (historyForm.elements.namedItem("end") as HTMLInputElement).value = isoDay(daysAgo(1));
 (historyForm.elements.namedItem("start") as HTMLInputElement).value = isoDay(daysAgo(30));
 (async () => {

@@ -122,7 +122,7 @@ function renderCells(t: CellTile, s: Sensors): PrimitiveCollection {
     const size = Math.min(34, 8 + 3 * Math.log2(cell.n));
     const position = Cartesian3.fromDegrees(cell.lon, cell.lat, CLUSTER_HEIGHT_M);
     bubbles.add({
-      id: { kind: "cell", lat: cell.lat, lon: cell.lon, cellDeg: t.cell_deg, count: cell.n },
+      id: { kind: "cell", lat: cell.lat, lon: cell.lon, cellDeg: t.cell_deg, count: cell.n, maxFrp: cell.max },
       position,
       pixelSize: size,
       color: RAMP[rampIndex(cell.max)].solid.withAlpha(0.82),
@@ -159,7 +159,7 @@ function renderPoints(t: PointTile, s: Sensors): PrimitiveCollection {
     if (viirs ? !s.viirs : !s.modis) continue;
     const ramp = RAMP[rampIndex(d.frp[i])];
     points.add({
-      id: { kind: "detection", id: d.id[i] },
+      id: { kind: "detection", id: d.id[i], frp: d.frp[i], viirs, t: d.t[i], conf: d.conf[i] },
       position: Cartesian3.fromDegrees(d.lon[i], d.lat[i], MARKER_HEIGHT_M),
       color: d.conf[i] === 0 ? ramp.faint : ramp.solid,
       pixelSize: viirs ? 5 : 8,
@@ -174,8 +174,12 @@ function renderPoints(t: PointTile, s: Sensors): PrimitiveCollection {
   return group;
 }
 
+/** Fire events currently drawn, by id: lets the hover tooltip describe the circle under the pointer. */
+export const drawnEvents = new Map<string, FireEvent>();
+
 export function renderEvents(events: FireEvent[], s: Sensors | null): PrimitiveCollection {
   const group = new PrimitiveCollection();
+  for (const ev of events) drawnEvents.set(ev.id, ev);
   const fills: GeometryInstance[] = [];
   const lines: GeometryInstance[] = [];
   const labels = new LabelCollection();
