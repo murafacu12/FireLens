@@ -24,3 +24,6 @@ Thumbs.db
 
 # Database backups and migration rehearsals
 backups/
+
+# Training data for the fire-danger model
+data/

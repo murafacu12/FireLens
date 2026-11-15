@@ -102,4 +102,6 @@ def create_app(settings: Settings | None = None, http_transport: httpx.AsyncBase
 
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs every request URL at INFO; the FIRMS area/archive API carries the MAP_KEY in the URL.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 app = create_app()
