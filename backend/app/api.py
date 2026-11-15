@@ -33,7 +33,7 @@ from app.schemas import (
     IngestReport,
     IngestRequest,
 )
-from app.services import cells, queries
+from app.services import analysis, cells, queries
 from app.services.ndvi import CopernicusNdvi, NdviResult
 from app.services.alerts import deliver_webhooks, evaluate_rules
 from app.services.coverage import day_status
@@ -321,6 +321,39 @@ def fire_tile(
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     return Response(content=body, media_type="application/json", headers=headers)
+
+
+# ---------------------------------------------------------------------------- analysis
+
+
+@router.get("/analysis/summary")
+def analysis_summary(
+    session: SessionDep,
+    settings: SettingsDep,
+    bbox: Annotated[str | None, Query(description="west,south,east,north; omit for the whole world")] = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    hours: Annotated[int | None, Query(ge=1, le=24 * 400, description="rolling window back from now, instead of start/end")] = None,
+):
+    """Fire statistics and trends for an area and period: detections per sensor and confidence, fire
+    events started, daily series, time of day, trend, unusual days, top fires, and the change against
+    the previous period of the same length (only when both periods are fully loaded)."""
+    try:
+        box = queries.parse_bbox(bbox)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if hours:
+        end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        start = end - timedelta(hours=hours)
+    if start is None or end is None:
+        raise HTTPException(422, "give hours, or start and end")
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    if end <= start or (end - start).days > analysis.MAX_DAYS:
+        raise HTTPException(422, f"period must be positive and at most {analysis.MAX_DAYS} days")
+    return analysis.analyze(session, box, start, end, assume_loaded=settings.is_demo)
 
 
 # ---------------------------------------------------------------------------- analysis export

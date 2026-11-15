@@ -1,6 +1,7 @@
 import "./styles.css";
 
 import { api, type AlertRuleIn, type BackfillJob, type CalendarDay, type Health, type Params } from "./api";
+import { runAnalysis, wireAnalysis } from "./analysis";
 import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
@@ -487,6 +488,7 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) =>
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
     document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${tab.dataset.tab}`));
     if (tab.dataset.tab === "calendar") void renderCalendar();
+    if (tab.dataset.tab === "analysis") describeAnalysisScope();
     if (tab.dataset.tab === "alerts") void renderAlerts();
   }),
 );
@@ -504,6 +506,28 @@ toggle("#lyr-events", (v) => globe.setEventsVisible(v));
 toggle("#lyr-zones", (v) => globe.setZonesVisible(v));
 toggle("#lyr-ndvi", (v) => globe.setNdviVisible(v));
 toggle("#lyr-static", () => void refresh());
+
+// ---------------------------------------------------------------- analysis
+/** The analysis uses the period chosen under Filters -> Time and the area the camera shows. */
+function analysisTime(): Params {
+  if (timeMode === "latest") return { hours: latestHours };
+  const { start, end } = timeRange();
+  // History days are inclusive: the period ends at the start of the next day
+  return { start, end: end ? new Date(new Date(end).getTime() + 1000).toISOString() : undefined };
+}
+
+function describeAnalysisScope(): void {
+  const period = timeMode === "latest"
+    ? `the last ${latestHours >= 48 ? `${latestHours / 24} days` : `${latestHours} h`}`
+    : dateInput("start").value === dateInput("end").value ? dateInput("start").value : `${dateInput("start").value} to ${dateInput("end").value}`;
+  $("#analysis-scope").textContent = `Period: ${period} (change it under Filters → Time). Area: what the globe shows when you press the button.`;
+}
+
+$("#analysis-run").addEventListener("click", () => {
+  describeAnalysisScope();
+  void runAnalysis(globe.visibleBbox(), analysisTime());
+});
+wireAnalysis((id) => void openEvent(id));
 
 // ---------------------------------------------------------------- calendar
 let calMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));

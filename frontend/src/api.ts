@@ -136,6 +136,56 @@ export interface FireEvent {
   updated_at: string | null;
 }
 
+type TopEvent = Pick<FireEvent, "id" | "latitude" | "longitude" | "start_at" | "end_at" | "area_km2" | "area_basis"
+  | "peak_pass_frp_mw" | "peak_pass_sensor" | "detection_count" | "lifecycle_state" | "status" | "evidence"
+  | "west" | "south" | "east" | "north">;
+interface SensorStats {
+  detections: number;
+  max_frp_mw: number;
+  mean_pixel_frp_mw: number | null;
+}
+interface PeriodCoverage {
+  days: number;
+  loaded_days: number;
+  complete: boolean;
+}
+
+/** GET /api/analysis/summary: statistics and trends for an area and period. */
+export interface AnalysisSummary {
+  bbox: number[];
+  start: string;
+  end: string;
+  hours: number;
+  method: string; // "detections" (exact) or "cells_<deg>"
+  coverage: PeriodCoverage;
+  detections: {
+    total: number;
+    by_sensor: { viirs: SensorStats; modis: SensorStats };
+    by_confidence: { low: number; nominal: number; high: number };
+  };
+  events: {
+    started: number;
+    by_evidence: Record<string, number>;
+    by_lifecycle: Record<string, number>;
+    largest_footprint: TopEvent[];
+    strongest: TopEvent[];
+  };
+  previous: {
+    start: string;
+    end: string;
+    detections: number;
+    events_started: number;
+    coverage: PeriodCoverage;
+    detections_change_pct: number | null;
+    events_change_pct: number | null;
+    comparable: boolean;
+  };
+  daily: { date: string; viirs: number; modis: number; detections: number; max_frp_mw: number; events_started: number }[];
+  trend: { direction: "rising" | "falling" | "stable" | "insufficient_data" | "not_comparable"; first_half: number | null; second_half: number | null; change_pct: number | null };
+  unusual_days: { date: string; detections: number; typical: number }[];
+  time_of_day: { basis: "local_solar" | "utc"; utc_offset_hours: number; hours: { hour: number; viirs: number; modis: number }[] };
+}
+
 export interface FireEventDetail extends FireEvent {
   detections: FireDetection[];
   resolved_from: string | null; // the id asked for, when it was merged/renamed into this event
@@ -321,6 +371,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<Health>("/api/health"),
   tilesMeta: () => request<TileMeta>("/api/tiles/meta"),
+  analysis: (p: Params) => request<AnalysisSummary>(`/api/analysis/summary${query(p)}`),
   tile,
   detections: (p: Params) => request<FireDetection[]>(`/api/detections${query(p)}`),
   detectionsCompact: (p: Params) => request<CompactDetections>(`/api/detections/compact${query(p)}`),

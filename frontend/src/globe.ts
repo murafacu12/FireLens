@@ -408,6 +408,25 @@ export class Globe {
     return [d(r.west), d(r.south), d(r.east), d(r.north)];
   }
 
+  /** Like viewBbox, but when the edge of the globe is in view (where viewBbox falls back to the
+   * whole world) it returns the box around the visible cap: everything up to the horizon. */
+  visibleBbox(): [number, number, number, number] | null {
+    const box = this.viewBbox();
+    if (!box || this.viewer.scene.mode !== SceneMode.SCENE3D || box[2] - box[0] < 359) return box;
+    const c = this.viewer.camera.positionCartographic;
+    const R = 6_371_000;
+    const theta = Math.acos(R / (R + Math.max(0, c.height))); // angular distance to the horizon
+    const lat = c.latitude, lon = CesiumMath.toDegrees(c.longitude);
+    const deg = CesiumMath.toDegrees;
+    const south = deg(lat - theta), north = deg(lat + theta);
+    const ratio = Math.sin(theta) / Math.cos(lat);
+    if (south <= -90 || north >= 90 || ratio >= 1) return [-180, Math.max(-90, south), 180, Math.min(90, north)];
+    const dlon = deg(Math.asin(ratio));
+    const wrap = (x: number) => ((x + 540) % 360) - 180;
+    const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
+    return [r4(wrap(lon - dlon)), r4(south), r4(wrap(lon + dlon)), r4(north)];
+  }
+
   flyTo(lat: number, lon: number, heightM = 60_000): void {
     this.viewer.camera.flyTo({ destination: Cartesian3.fromDegrees(lon, lat, heightM), duration: 1.6 });
   }
