@@ -28,6 +28,7 @@ import {
 
 import { api, type CellTile, type FireEvent, type FireTile, type Params, type PointTile } from "./api";
 import { batch, instance, MARKER_HEIGHT_M, NO_DEPTH_TEST_WITHIN_M, RAMP, rampIndex } from "./render";
+import { ColorGeometryInstanceAttribute, DistanceDisplayConditionGeometryInstanceAttribute, PerInstanceColorAppearance, Primitive, Rectangle, RectangleGeometry, RectangleOutlineGeometry } from "cesium";
 
 export type TileKind = FireTile["kind"];
 export interface Lod {
@@ -150,9 +151,44 @@ function renderCells(t: CellTile, s: Sensors): PrimitiveCollection {
   return group;
 }
 
+// Close in, each detection is also drawn as its pixel footprint on the ground (nominal size, as
+// NASA's FIRMS map does), so neighbouring hotspots a few hundred metres apart stay distinct
+// instead of merging into one dot. Only within FOOTPRINT_RANGE_M of the camera, and only for tiles
+// small enough to build quickly.
+const FOOTPRINT_RANGE_M = 120_000;
+const FOOTPRINT_MAX_PER_TILE = 6000;
+const NOMINAL_KM = { viirs: 0.375, modis: 1.0 };
+const FOOTPRINT_SHOW = new DistanceDisplayConditionGeometryInstanceAttribute(0, FOOTPRINT_RANGE_M);
+
+function footprints(d: PointTile["points"], s: Sensors): Primitive[] {
+  const fills: GeometryInstance[] = [];
+  const lines: GeometryInstance[] = [];
+  for (let i = 0; i < d.count; i++) {
+    const viirs = d.viirs[i] === 1;
+    if (viirs ? !s.viirs : !s.modis) continue;
+    const half = (viirs ? NOMINAL_KM.viirs : NOMINAL_KM.modis) / 2;
+    const dLat = half / 111.2;
+    const dLon = half / (111.2 * Math.max(Math.cos((d.lat[i] * Math.PI) / 180), 0.05));
+    const rectangle = Rectangle.fromDegrees(d.lon[i] - dLon, d.lat[i] - dLat, d.lon[i] + dLon, d.lat[i] + dLat);
+    const id = { kind: "detection", id: d.id[i], frp: d.frp[i], viirs, t: d.t[i], conf: d.conf[i] };
+    const colour = RAMP[rampIndex(d.frp[i])].solid;
+    fills.push(new GeometryInstance({ geometry: new RectangleGeometry({ rectangle, height: 0 }), id,
+      attributes: { color: ColorGeometryInstanceAttribute.fromColor(colour.withAlpha(0.55)), distanceDisplayCondition: FOOTPRINT_SHOW } }));
+    lines.push(new GeometryInstance({ geometry: new RectangleOutlineGeometry({ rectangle, height: 0 }), id,
+      attributes: { color: ColorGeometryInstanceAttribute.fromColor(viirs ? Color.WHITE.withAlpha(0.85) : Color.BLACK.withAlpha(0.85)), distanceDisplayCondition: FOOTPRINT_SHOW } }));
+  }
+  if (!fills.length) return [];
+  const make = (instances: GeometryInstance[], translucent: boolean) => new Primitive({
+    geometryInstances: instances, asynchronous: false,
+    appearance: new PerInstanceColorAppearance({ flat: true, translucent }),
+  });
+  return [make(fills, true), make(lines, false)];
+}
+
 function renderPoints(t: PointTile, s: Sensors): PrimitiveCollection {
   const group = new PrimitiveCollection();
   const d = t.points;
+  if (d.count <= FOOTPRINT_MAX_PER_TILE) for (const p of footprints(d, s)) group.add(p);
   const points = new PointPrimitiveCollection();
   for (let i = 0; i < d.count; i++) {
     const viirs = d.viirs[i] === 1;
@@ -189,7 +225,8 @@ export function renderEvents(events: FireEvent[], s: Sensors | null): PrimitiveC
     const color = active ? ACTIVE_COLOR : INACTIVE_COLOR;
     const center = Cartesian3.fromDegrees(ev.longitude, ev.latitude);
     const radius = Math.max(400, Math.sqrt(ev.area_km2 / Math.PI) * 1000);
-    fills.push(instance(new CircleGeometry({ center, radius, height: 0 }), color.withAlpha(active ? 0.28 : 0.18), ev.id));
+    // light fill: the circle frames the fire, the detections inside it stay visible
+    fills.push(instance(new CircleGeometry({ center, radius, height: 0 }), color.withAlpha(active ? 0.1 : 0.07), ev.id));
     lines.push(instance(new CircleOutlineGeometry({ center, radius, height: 0 }), color, ev.id));
     if (ev.area_km2 >= 1) {
       labels.add({
@@ -303,6 +340,11 @@ export class FireTiles {
   }
 
   static readonly limits = { MAX_TILES, MAX_POINT_TILES };
+
+  /** How many tiles are on screen (0 before anything has loaded). */
+  get shownCount(): number {
+    return this.shown.size;
+  }
 
   stats(bbox: BBox): TileStats {
     let detections = 0;

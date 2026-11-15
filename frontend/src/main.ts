@@ -5,6 +5,7 @@ import { runAnalysis, runSensors, wireAnalysis } from "./analysis";
 import { closeDetails, setActiveHours, showDetection, showEvent, showPoint, statePill, wireDetails } from "./details";
 import { Globe, type BaseLayerId, type PickResult } from "./globe";
 import { helpButton, mountGuide, mountLegend, showMapTip, wireHelp } from "./guide";
+import { revealMap, wireLayout } from "./layout";
 import { $, daysAgo, esc, fmtNum, fmtTime, isoDay, toast } from "./util";
 
 const filtersForm = $<HTMLFormElement>("#filters");
@@ -43,11 +44,13 @@ function onPick(r: PickResult): void {
 
 function setPicking(on: boolean): void {
   picking = on;
+  if (on) revealMap(); // on phones the sheet would cover the globe the user must tap
   $("#picking-hint").classList.toggle("hidden", !on);
   $("#globe").classList.toggle("crosshair", on);
 }
 
 async function openEvent(id: string): Promise<void> {
+  revealMap();
   try {
     const ev = await api.event(id);
     showEvent(ev, (eventId) => {
@@ -367,7 +370,7 @@ let currentLod: ReturnType<typeof globe.lod> | null = null;
 
 function renderTileStats(): void {
   if (focusEventId) return;
-  const bbox = globe.viewBbox();
+  const bbox = globe.focusBbox();
   if (!bbox || !currentLod) return renderStats(0, eventsInView);
   const st = globe.tiles.stats(bbox);
   const note = st.loading
@@ -384,9 +387,11 @@ const fmtCell = (deg: number) => (deg >= 1 ? `${+deg.toFixed(2)}°` : `${Math.ro
  * for the current filters are requested. */
 function updateView(): void {
   if (focusEventId) return;
-  const bbox = globe.viewBbox();
+  const bbox = globe.focusBbox();
   if (!bbox) return;
-  currentLod = globe.lod(bbox);
+  // what the tiles already on screen say about this area decides between dots and bubbles
+  const known = globe.tiles.stats(bbox);
+  currentLod = globe.lod(bbox, known.detections > 0 || globe.tiles.shownCount ? known.detections : null);
   globe.tiles.view(currentLod, bbox);
   void countEvents(bbox);
   void checkCoverage();
@@ -501,7 +506,7 @@ function renderActiveFilters(): void {
   const v = (k: string) => ((f.get(k) as string | null) ?? "").trim();
   const chips: [string, string[]][] = [];
   const conf = v("min_confidence");
-  if (conf !== "nominal") chips.push([conf === "high" ? "High confidence only" : "Including doubtful detections", ["min_confidence"]]);
+  if (conf) chips.push([conf === "high" ? "High confidence only" : "Nominal and high confidence", ["min_confidence"]]);
   const ins = f.getAll("instrument");
   if (ins.length === 1) chips.push([`${ins[0]} only`, ["instrument"]]);
   if (ins.length === 0) chips.push(["No sensor selected", ["instrument"]]);
@@ -529,7 +534,7 @@ $("#active-filters").addEventListener("click", (e) => {
   for (const name of fields) {
     filtersForm.querySelectorAll<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`).forEach((el) => {
       if (el instanceof HTMLInputElement && el.type === "checkbox") el.checked = name === "instrument";
-      else if (el instanceof HTMLSelectElement) el.value = name === "min_confidence" ? "nominal" : "";
+      else if (el instanceof HTMLSelectElement) el.value = "";
       else el.value = "";
     });
   }
@@ -857,6 +862,7 @@ async function loadHealth(): Promise<void> {
 
 wireDetails((id) => void openEvent(id));
 wireHelp();
+wireLayout(() => globe.resize());
 mountLegend($("#globe"));
 mountGuide($("#globe"), $("#guide-open"));
 globe.onHover(showMapTip);

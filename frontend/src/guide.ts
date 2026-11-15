@@ -16,7 +16,7 @@ export const GLOSSARY: Record<string, { title: string; text: string }> = {
   },
   confidence: {
     title: "Detection confidence",
-    text: "How sure NASA's algorithm is that a hot pixel is a real fire. Low-confidence detections are often sun glint, hot bare ground or very small fires. The default, Nominal and up, hides the doubtful ones.",
+    text: "How sure NASA's algorithm is that a hot pixel is a real fire. Low-confidence detections are often sun glint, hot bare ground or very small fires. By default all of them are shown, as on NASA's map; choose \"Nominal and high\" to hide the doubtful ones.",
   },
   sensors: {
     title: "MODIS and VIIRS",

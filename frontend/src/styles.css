@@ -183,12 +183,46 @@ table.risk td { padding: 4px; border-bottom: 1px solid var(--line); }
 .cesium-viewer-bottom { opacity: 0.75; }
 .cesium-viewer-toolbar { top: 12px; right: 404px; }
 
+/* ------------------------------------------------------------- collapsible side panel */
+.collapse-btn { width: 26px; height: 26px; padding: 0; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--muted); font-size: 15px; line-height: 1; font-weight: 700; }
+.collapse-btn:hover { color: var(--text); filter: none; }
+#app.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+#app.sidebar-collapsed #sidebar { display: none; }
+.map-open-panel { position: absolute; left: 12px; top: 12px; z-index: 7; background: rgba(19, 26, 35, 0.95); color: var(--text);
+  border: 1px solid var(--line); font-weight: 600; padding: 8px 12px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
+.map-open-panel:hover { filter: none; border-color: var(--muted); }
+#app { position: relative; }
+.sheet-handle { display: none; }
+
 @media (max-width: 900px) {
-  #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 55vh 45vh; }
-  #globe { grid-row: 1; }
-  #sidebar { grid-row: 2; border-right: none; border-top: 1px solid var(--line); }
-  /* bottom sheet over the sidebar, so the globe stays visible */
-  .details { top: auto; bottom: 0; left: 0; right: 0; width: 100%; max-height: 45vh; border-radius: 12px 12px 0 0; }
+  :root { --sheet-peek: 150px; }
+  /* the globe fills the screen; the side panel is a bottom sheet over it */
+  #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100vh; height: 100dvh; }
+  #globe { grid-row: 1; grid-column: 1; }
+  #sidebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; height: var(--sheet-peek);
+    border-right: none; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45); transition: height 0.25s ease; }
+  #sidebar.sheet-open { height: 85vh; height: 85dvh; }
+  #sidebar:not(.sheet-open) .tabs, #sidebar:not(.sheet-open) .panel, #sidebar:not(.sheet-open) .active-filters,
+  #sidebar:not(.sheet-open) .tagline, #sidebar:not(.sheet-open) .stats-note { display: none !important; }
+  .sheet-handle { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 6px 0 2px;
+    background: none; border: none; color: var(--muted); font-size: 11px; font-weight: 500; cursor: pointer; touch-action: none; }
+  .sheet-handle .grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line); }
+  .brand { padding: 2px 16px 6px; }
+  .brand h1 { font-size: 17px; }
+  .stats { padding-bottom: 8px; }
+  .stats div { padding: 6px 10px; }
+  .stats b { font-size: 16px; }
+  .collapse-btn, .map-open-panel { display: none !important; }
+  /* keep map controls above the collapsed sheet */
+  .zoom-controls { bottom: calc(var(--sheet-peek) + 14px); }
+  #app .map-legend { bottom: calc(var(--sheet-peek) + 14px); } /* #app: beats the base rule declared further down */
+  .map-guide { top: 8px; }
+  #globe .cesium-viewer-bottom { bottom: var(--sheet-peek); }
+  /* fire details: a sheet above the side panel */
+  .details { top: auto; bottom: 0; left: 0; right: 0; width: 100%; max-height: 60vh; max-height: 60dvh;
+    border-radius: 12px 12px 0 0; z-index: 30; }
   .picking { left: 50%; }
 }
 
@@ -291,5 +325,5 @@ label > span { display: inline-flex; align-items: center; }
 .toggle-chips input:checked + span { border-color: var(--accent); background: #3b1a0c; }
 .toggle-chips input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 760px) {
-  .map-legend { width: 200px; bottom: 30px; }
+  .map-legend { width: 200px; } /* its bottom offset sits above the phone sheet (900px rule) */
 }

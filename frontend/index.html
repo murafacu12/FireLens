@@ -8,7 +8,10 @@
   </head>
   <body>
     <div id="app">
-      <aside id="sidebar">
+      <aside id="sidebar" aria-label="Filters, layers and analysis">
+        <button type="button" id="sheet-handle" class="sheet-handle" aria-expanded="false" aria-controls="sidebar">
+          <span class="grip" aria-hidden="true"></span><span class="sheet-label">Filters, layers and analysis</span>
+        </button>
         <header class="brand">
           <div>
             <h1>FIRELENS</h1>
@@ -17,6 +20,7 @@
           <div class="brand-side">
             <span id="mode-badge" class="badge">…</span>
             <button type="button" id="guide-open" class="guide-btn" aria-label="How to read this map" title="How to read this map">?</button>
+            <button type="button" id="sidebar-collapse" class="collapse-btn" aria-expanded="true" aria-controls="sidebar" aria-label="Hide the side panel" title="Hide the side panel">«</button>
           </div>
         </header>
         <div id="stats" class="stats"></div>
@@ -90,7 +94,7 @@
               <div class="row">
                 <label><span>Confidence <button type="button" class="help" data-help="confidence" aria-label="Explain">?</button></span>
                   <select name="min_confidence">
-                    <option value="">Any (incl. doubtful)</option><option value="nominal" selected>Nominal and high</option><option value="high">High only</option>
+                    <option value="" selected>All, like NASA's map</option><option value="nominal">Nominal and high</option><option value="high">High only</option>
                   </select>
                 </label>
                 <label><span>Day / night <button type="button" class="help" data-help="daynight" aria-label="Explain">?</button></span>
@@ -232,6 +236,7 @@
       </aside>
 
       <main id="globe"></main>
+      <button type="button" id="sidebar-open" class="map-open-panel hidden" aria-controls="sidebar" aria-label="Show the side panel">☰ Panel</button>
 
       <aside id="details" class="details hidden">
         <button type="button" id="details-close" class="icon close" aria-label="Close">×</button>

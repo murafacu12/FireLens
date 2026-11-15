@@ -44,6 +44,8 @@ export type PickResult =
   | { kind: "cell"; lat: number; lon: number; cellDeg: number; count: number };
 
 const CELL_PX = 45; // target on-screen spacing between grouped markers
+const POINTS_MAX_IN_VIEW = 15_000; // above this, a regional view keeps grouped bubbles
+const POINTS_ALWAYS_BELOW = 3_000; // at most this many fires in view: always individual (if <= 16 point tiles)
 
 const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
 const GIBS_CREDIT = new Credit("Imagery: NASA EOSDIS GIBS");
@@ -333,15 +335,29 @@ export class Globe {
 
   /** Level of detail for the current camera: which tile zoom to draw, and as what.
    * Cells halve in size at each level (180 / 2^level degrees); a tile is 16 x 16 of them. */
-  lod(bbox: [number, number, number, number]): Lod {
+  lod(bbox: [number, number, number, number], detectionsInView: number | null = null): Lod {
     let level = Math.round(Math.log2(180 / this.idealCellDeg()));
-    if (level > MAX_CELL_LEVEL && FireTiles.count(bbox, POINT_ZOOM) <= FireTiles.limits.MAX_POINT_TILES) {
+    // Individual fires as soon as the view is regional (finest cell level, ~500 km across), unless
+    // the area is so dense that thousands of overlapping dots would say less than grouped bubbles.
+    // Any view that holds only a few thousand fires shows them individually, as NASA's map does.
+    const fewEnough = detectionsInView === null || detectionsInView <= POINTS_MAX_IN_VIEW;
+    const sparse = detectionsInView !== null && detectionsInView <= POINTS_ALWAYS_BELOW;
+    const pointTiles = FireTiles.count(bbox, POINT_ZOOM);
+    if (pointTiles <= FireTiles.limits.MAX_POINT_TILES && (level > MAX_CELL_LEVEL || sparse || (level === MAX_CELL_LEVEL && fewEnough))) {
       return { kind: "points", z: POINT_ZOOM, cellDeg: null };
     }
     level = Math.min(MAX_CELL_LEVEL, Math.max(MIN_LEVEL, level));
     // A tilted view to the horizon covers a lot of ground: use coarser cells rather than 100s of tiles.
     while (level > MIN_LEVEL && FireTiles.count(bbox, level - TILE_SHIFT) > FireTiles.limits.MAX_TILES) level--;
     return { kind: "cells", z: level - TILE_SHIFT, cellDeg: 180 / 2 ** level };
+  }
+
+  /** The container changed size (side panel shown/hidden): resize the canvas, redraw and reload
+   * the tiles for the new view. */
+  resize(): void {
+    this.viewer.resize();
+    this.redraw();
+    this.viewer.camera.moveEnd.raiseEvent();
   }
 
   /** Call `fn` once the camera stops moving (after drags, zooms and flights). */
@@ -439,6 +455,33 @@ export class Globe {
       : [];
     this.pinned.replace(...ring, marker);
     this.redraw();
+  }
+
+  /** The part of the view the user is looking at, for choosing the level of detail and the tiles.
+   * Looking straight down this is the whole view. Tilted toward the horizon, the view rectangle
+   * reaches hundreds of km away and would force grouped bubbles even when the camera is close to
+   * the ground; so it is cut to a disc around the screen centre whose radius is 1.5x the distance
+   * from the camera to that point (which still covers the foreground). */
+  focusBbox(): [number, number, number, number] | null {
+    const view = this.viewBbox();
+    if (!view || this.viewer.scene.mode !== SceneMode.SCENE3D) return view;
+    const scene = this.viewer.scene;
+    const centre = this.viewer.camera.pickEllipsoid(new Cartesian2(scene.canvas.clientWidth / 2, scene.canvas.clientHeight / 2), scene.globe.ellipsoid);
+    if (!centre) return view;
+    const slantKm = Cartesian3.distance(this.viewer.camera.positionWC, centre) / 1000;
+    const c = Cartographic.fromCartesian(centre);
+    const lat = CesiumMath.toDegrees(c.latitude), lon = CesiumMath.toDegrees(c.longitude);
+    const rKm = 1.5 * slantKm;
+    const dLat = rKm / 111.2;
+    const dLon = rKm / (111.2 * Math.max(Math.cos(c.latitude), 0.05));
+    if (dLat >= 90 || dLon >= 180) return view;
+    const focus: [number, number, number, number] = [lon - dLon, Math.max(-90, lat - dLat), lon + dLon, Math.min(90, lat + dLat)];
+    // keep the smaller of the two on each side (the view can be narrower than the disc)
+    const [vw, vs, ve, vn] = view;
+    const crosses = vw > ve || focus[0] < -180 || focus[2] > 180;
+    if (crosses) return view; // near the antimeridian: keep the plain view rectangle
+    const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
+    return [r4(Math.max(vw, focus[0])), r4(Math.max(vs, focus[1])), r4(Math.min(ve, focus[2])), r4(Math.min(vn, focus[3]))];
   }
 
   /** Current camera footprint as west,south,east,north (degrees), or null when looking at space. */
