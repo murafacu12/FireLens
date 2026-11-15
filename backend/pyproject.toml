@@ -23,6 +23,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "respx>=0.21"]
+# Windows desktop app (desktop/build.ps1): FIRELENS.exe and its icon
+desktop = ["pyinstaller>=6.16", "pillow>=11"]
 # fire-danger model: training (backend/ml) and inference in /api/risk
 ml = ["scikit-learn>=1.5", "numpy>=2.0"]
 

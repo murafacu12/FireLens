@@ -1,0 +1,20 @@
+# HTTPS for the FIRELENS API. Caddy gets and renews the certificate for API_DOMAIN by itself
+# (ports 80 and 443 must be open to the internet).
+{$API_DOMAIN} {
+	reverse_proxy api:8000 {
+		# long history jobs and big tiles: generous timeouts
+		transport http {
+			read_timeout 5m
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	log {
+		output stdout
+		format console
+	}
+}

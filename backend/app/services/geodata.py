@@ -26,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
+from app.paths import data_dir
+
 log = logging.getLogger(__name__)
 
 GDAL_ENV = dict(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
@@ -44,7 +46,7 @@ LANDCOVER_LABEL = {
 
 
 def default_dir() -> Path:
-    return Path(__file__).resolve().parents[3] / "data" / "geo"
+    return data_dir() / "geo"
 
 
 @dataclass(frozen=True)

@@ -10,8 +10,40 @@ Copernicus Sentinel-2 NDVI).
   (features, usage, architecture, API, data, limits, changelog, roadmap)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): components, data flow, roadmap
 - [docs/DATA_HARMONIZATION.md](docs/DATA_HARMONIZATION.md): how MODIS and VIIRS become one model
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): server deployment guide (Oracle Cloud + Vercel; prepared, not deployed)
 
-## Quick start
+## Try FIRELENS on Windows (no installation of Python or Node)
+
+1. Open the repository's **[Releases](https://github.com/murafacu12/FireLens/releases/latest)** and
+   download **`FIRELENS-1.0.0-windows-x64.zip`** (about 100 MB).
+2. Unzip it anywhere (e.g. Desktop) and double-click **`FIRELENS\FIRELENS.exe`**.
+3. Windows may show *"Windows protected your PC"* because the app is not code-signed: click
+   **More info → Run anyway**.
+4. A console window opens and, a moment later, FIRELENS opens in your browser
+   (`http://127.0.0.1:8765`). **Keep the window open** while you use it; close it to stop FIRELENS.
+
+What to expect:
+
+- **First start** (internet needed): FIRELENS downloads the last 24 hours of real NASA FIRMS fire
+  data for the whole planet, about a minute or two. The map fills in as it arrives. While it runs,
+  it refreshes every hour and keeps what it loaded, so the history grows.
+- **Without internet** on the first start it shows **demo data** (synthetic fires), so every
+  screen can still be explored.
+- Everything is stored in your user folder, `%LOCALAPPDATA%\FIRELENS` (database, map-context
+  tiles, log). Delete that folder to start fresh. Nothing is installed system-wide and no
+  administrator rights are needed.
+- Requirements: Windows 10 or 11 (64-bit), 4 GB RAM or more, a recent Chrome, Edge or Firefox.
+- Optional keys go in `%LOCALAPPDATA%\FIRELENS\.env`: `FIRELENS_FIRMS_MAP_KEY` (load any past
+  dates) and `FIRELENS_COPERNICUS_CLIENT_ID` / `_SECRET` (Sentinel satellite readings per fire).
+  FIRELENS works fully without them.
+
+**Build the app yourself** (developers): with Node 20+ and the backend's `.venv`
+(`pip install -e ".[desktop]"`), run
+`powershell -ExecutionPolicy Bypass -File backend\desktop\build.ps1`. It produces the app folder,
+the portable zip and, if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed, an
+installer `FIRELENS-Setup-1.0.0.exe`. See `backend/firelens.spec` and `backend/desktop/`.
+
+## Quick start (from source)
 
 Requirements: Python 3.11+, Node 20+.
 

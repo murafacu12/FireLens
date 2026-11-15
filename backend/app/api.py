@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import hashlib
+import hmac
 import io
 import json
 import threading
@@ -84,6 +85,19 @@ def area_params(
 AreaDep = Annotated[queries.Area | None, Depends(area_params)]
 
 
+def require_admin(request: Request) -> None:
+    """Data-changing endpoints: with FIRELENS_ADMIN_TOKEN set, the X-Admin-Token header must match."""
+    token = request.app.state.settings.admin_token
+    if not token:
+        return
+    given = request.headers.get("X-Admin-Token", "")
+    if not hmac.compare_digest(given.encode(), token.encode()):
+        raise HTTPException(401, "admin key required")
+
+
+AdminOnly = [Depends(require_admin)]
+
+
 @router.get("/health")
 def health(request: Request, session: SessionDep, settings: SettingsDep):
     last = session.scalars(select(IngestRunRow).order_by(IngestRunRow.id.desc()).limit(1)).first()
@@ -103,6 +117,8 @@ def health(request: Request, session: SessionDep, settings: SettingsDep):
         "latest_detection_at": (newest.replace(tzinfo=UTC) if (newest := session.scalar(select(func.max(DetectionRow.acquired_at)))) else None),
         "refresh_minutes": settings.ingest_interval_minutes if not settings.is_demo else 0,
         "event_active_hours": settings.event_active_hours,
+        # production: loading data and editing alert rules need the admin key
+        "admin_locked": bool(settings.admin_token),
     }
 
 
@@ -111,7 +127,7 @@ def sources():
     return {"sources": [vars(s) for s in SOURCES.values()], "public_regions": PUBLIC_REGIONS}
 
 
-@router.post("/ingest", response_model=IngestReport)
+@router.post("/ingest", response_model=IngestReport, dependencies=AdminOnly)
 async def ingest(req: IngestRequest, request: Request, settings: SettingsDep, http: HttpDep):
     return await run_ingest(request.app.state.session_factory, settings, http, req)
 
@@ -613,7 +629,7 @@ def list_rules(session: SessionDep):
     return session.scalars(select(AlertRuleRow).order_by(AlertRuleRow.id)).all()
 
 
-@router.post("/alerts/rules", response_model=AlertRule, status_code=201)
+@router.post("/alerts/rules", response_model=AlertRule, status_code=201, dependencies=AdminOnly)
 def create_rule(rule: AlertRuleIn, session: SessionDep, request: Request, background: BackgroundTasks):
     bbox = [rule.west, rule.south, rule.east, rule.north]
     circle = [rule.center_lat, rule.center_lon, rule.radius_km]
@@ -645,7 +661,7 @@ def create_rule(rule: AlertRuleIn, session: SessionDep, request: Request, backgr
     return row
 
 
-@router.delete("/alerts/rules/{rule_id}", status_code=204)
+@router.delete("/alerts/rules/{rule_id}", status_code=204, dependencies=AdminOnly)
 def delete_rule(rule_id: int, session: SessionDep):
     if not session.get(AlertRuleRow, rule_id):
         raise HTTPException(404, "rule not found")
@@ -782,7 +798,7 @@ def history_countries():
     return [{"code": k, "name": v[0], "bbox": v[1]} for k, v in COUNTRY_BBOX.items()]
 
 
-@router.post("/history/backfill", status_code=202)
+@router.post("/history/backfill", status_code=202, dependencies=AdminOnly)
 async def start_backfill(req: BackfillRequest, request: Request, settings: SettingsDep, http: HttpDep):
     _require_history(settings)
     jobs: dict[str, BackfillJob] = request.app.state.jobs
@@ -808,7 +824,7 @@ def get_job(job_id: str, request: Request):
     return job.public()
 
 
-@router.delete("/history/jobs/{job_id}", status_code=202)
+@router.delete("/history/jobs/{job_id}", status_code=202, dependencies=AdminOnly)
 def cancel_job(job_id: str, request: Request):
     job = request.app.state.jobs.get(job_id)
     if not job:

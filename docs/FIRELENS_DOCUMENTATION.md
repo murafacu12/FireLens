@@ -60,6 +60,21 @@ identity. Developed by ÆOn Software Solutions.
 
 ## 2. Getting started
 
+### Windows app (no Python or Node needed)
+
+Download `FIRELENS-<version>-windows-x64.zip` from the GitHub Releases, unzip it and run
+`FIRELENS.exe` (see the README for the steps and what to expect). It starts the API on a local
+port, serves the website from the same address and opens the browser. Data lives in
+`%LOCALAPPDATA%\FIRELENS`. First start loads the last 24 hours of NASA data worldwide (or demo
+data without internet); the hourly refresh keeps adding to it.
+
+How it is built: `backend/app/desktop.py` (launcher), `backend/desktop_entry.py`,
+`backend/firelens.spec` (PyInstaller, bundles rasterio's GDAL/PROJ and the built website),
+`backend/desktop/build.ps1` (website + app + zip + optional Inno Setup installer),
+`backend/desktop/installer.iss`.
+
+### From source
+
 **Requirements:** Python 3.11+ and Node 20+.
 
 ```bash
@@ -522,8 +537,14 @@ Environment variables (prefix `FIRELENS_`), set in `.env`:
 | `COPERNICUS_CLIENT_ID` / `_SECRET` | — | Copernicus Data Space |
 | `METEOMATICS_USERNAME` / `_PASSWORD` | — | Meteomatics (training only) |
 | `ALLOW_SCHEMA_UPGRADE` | `false` | Permit schema migrations at start |
+| `ADMIN_TOKEN` | — | Production: key (header `X-Admin-Token`) for ingest, history loading and alert rules. Unset = open (development) |
+| `DATA_DIR` | `data/` | Folder for the seasonal archive, report cache and map-context tiles (`/data` in the container) |
+| `CORS_ORIGINS` | localhost | Website addresses allowed to call the API (JSON list) |
 
 Run only one API process: two would each run the ingest scheduler.
+
+**Production:** Oracle Cloud Always Free VM (Docker + Caddy HTTPS) for the API and Vercel for the
+website, at no cost. Step by step: [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
@@ -577,6 +598,8 @@ cd frontend && npm run typecheck && npm run build
 - **Single machine:** SQLite, one API process, no user accounts. Fine for one user; not yet a
   multi-user deployment.
 - **Alerts:** in the app and by webhook only.
+- **Admin actions in production** (loading history, refresh now, alert rules) need the admin key;
+  the website asks for it once and keeps it in that browser.
 
 ---
 

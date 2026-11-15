@@ -8,6 +8,8 @@ __pycache__/
 # Node
 node_modules/
 dist/
+# PyInstaller working folder (desktop app)
+backend/build/
 
 # Local data & secrets
 *.db

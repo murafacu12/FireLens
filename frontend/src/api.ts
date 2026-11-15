@@ -1,5 +1,7 @@
 // Typed client for the FireLens API. Types mirror backend/app/schemas.py.
 
+import { t } from "./prefs";
+
 export type Instrument = "MODIS" | "VIIRS";
 export type ConfidenceLevel = "low" | "nominal" | "high";
 
@@ -494,11 +496,42 @@ async function tile(kind: FireTile["kind"], z: number, x: number, y: number, p: 
   return { data: (await resp.json()) as FireTile, etag: resp.headers.get("ETag") ?? "" };
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// Production locks the data-changing endpoints (ingest, history loading, alert rules) with an
+// admin key. The key is asked for the first time one is refused, then kept in this browser only.
+const ADMIN_KEY = "firelens.adminToken";
+function savedAdminKey(): string | null {
+  try {
+    return localStorage.getItem(ADMIN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
+  const key = savedAdminKey();
   const resp = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: { "Content-Type": "application/json", ...(key ? { "X-Admin-Token": key } : {}), ...(init?.headers ?? {}) },
   });
+  if (resp.status === 401 && !retried) {
+    const given = window.prompt(t("admin.prompt"))?.trim();
+    if (given) {
+      try {
+        localStorage.setItem(ADMIN_KEY, given);
+      } catch {
+        /* private window: it is used for this request only */
+        return request<T>(path, { ...init, headers: { ...(init?.headers ?? {}), "X-Admin-Token": given } }, true);
+      }
+      return request<T>(path, init, true);
+    }
+  }
+  if (resp.status === 401) {
+    try {
+      localStorage.removeItem(ADMIN_KEY); // a wrong key is not kept
+    } catch {
+      /* ignore */
+    }
+  }
   if (!resp.ok) {
     let detail = resp.statusText;
     try {

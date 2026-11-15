@@ -1,0 +1,43 @@
+# FIRELENS API on one server (Oracle Cloud Always Free, Arm VM).
+#   api:   the FastAPI app; database and side files in ./data (a plain folder on the VM's disk)
+#   caddy: HTTPS in front of it, with a free, auto-renewed Let's Encrypt certificate
+# Usage (on the VM, in this folder):  docker compose up -d --build
+# Settings and secrets: ./.env (copy .env.production.example; never commit it).
+
+services:
+  api:
+    build: ../backend
+    image: firelens-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FIRELENS_DATABASE_URL: sqlite:////data/firelens.db
+      FIRELENS_DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    expose:
+      - "8000"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  caddy_data:
+  caddy_config:

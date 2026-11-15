@@ -38,6 +38,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models import DetectionRow
+from app.paths import data_dir
 from app.services.coverage import WORLD, BBox, _split, day_status
 from app.services.store import SITE_CELL_DEG
 
@@ -93,7 +94,7 @@ chunks_table = Table(  # finished download requests (resumable downloads)
 
 
 def default_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "data" / "baseline.db"
+    return data_dir() / "baseline.db"
 
 
 def open_rw(path: Path) -> Engine:

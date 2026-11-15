@@ -23,6 +23,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models import DetectionRow, EventRow
+from app.paths import data_dir
 from app.services import geodata
 from app.services.sentinel import CdseStats, SentinelError
 
@@ -42,7 +43,7 @@ reports = Table(
 
 
 def default_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "data" / "enrichment.db"
+    return data_dir() / "enrichment.db"
 
 
 _engines: dict[str, object] = {}

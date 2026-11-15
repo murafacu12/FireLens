@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # Default: data/baseline.db at the repository root. Opened read-only by the API.
     baseline_db_path: str | None = None
 
+    # Production: data-changing endpoints (ingest, history loading, alert rules) need this key in
+    # the X-Admin-Token header. Unset (development): they stay open.
+    admin_token: str | None = None
+
+    # Desktop app: folder with the built website (frontend/dist), served at / next to /api.
+    web_dir: str | None = None
+
     # Third-party providers
     open_meteo_url: str = "https://api.open-meteo.com/v1/forecast"
     copernicus_client_id: str | None = None

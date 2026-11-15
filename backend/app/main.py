@@ -3,11 +3,13 @@ import contextlib
 import logging
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 
 from fastapi.concurrency import run_in_threadpool
@@ -104,6 +106,9 @@ def create_app(settings: Settings | None = None, http_transport: httpx.AsyncBase
         CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"]
     )
     app.include_router(router)
+    if settings.web_dir and Path(settings.web_dir, "index.html").is_file():
+        # the website, from the same origin as the API (desktop app); /api routes come first
+        app.mount("/", StaticFiles(directory=settings.web_dir, html=True), name="web")
     return app
 
 
