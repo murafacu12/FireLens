@@ -21,6 +21,7 @@ export const EN = {
   "app.picking": "Click the globe to set the point · Esc to cancel",
   "app.close": "Close",
   "app.explain": "Explain: {what}",
+  "app.devBy": "Developed by ÆOn Software Solutions",
   "app.zoomIn": "Zoom in (+)",
   "app.zoomOut": "Zoom out (−)",
 
@@ -721,6 +722,7 @@ export const ES: Record<Key, string> = {
   "app.picking": "Hacé clic en el globo para fijar el punto · Esc para cancelar",
   "app.close": "Cerrar",
   "app.explain": "Explicar: {what}",
+  "app.devBy": "Desarrollado por ÆOn Software Solutions",
   "app.zoomIn": "Acercar (+)",
   "app.zoomOut": "Alejar (−)",
 

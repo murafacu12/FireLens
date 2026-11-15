@@ -52,6 +52,18 @@ body.view-advanced .simple-only { display: none !important; }
 .brand-mark circle { fill: #000; stroke: var(--accent); stroke-width: 2.5; }
 .brand-mark path { fill: var(--accent); }
 .brand-text { flex: 1; min-width: 0; }
+/* the official logo (globe, satellite, FIRELENS wordmark), cropped to its content from the
+   1376x768 artwork (content box x 71-1301, y 174-542); `lighten` lets its near-black background
+   disappear into the panel */
+.brand-logo { margin: 0; height: 46px; aspect-ratio: 1230 / 368; max-width: 100%;
+  background: url("/brand/firelens-logo.jpg") no-repeat; background-size: 111.87% auto; background-position: 48.63% 43.5%;
+  mix-blend-mode: lighten; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* the development team's mark, small, bottom-right of the map */
+.dev-credit { position: absolute; right: 14px; bottom: 10px; z-index: 6; display: flex; align-items: center;
+  padding: 4px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.55); opacity: 0.85; pointer-events: auto; }
+.dev-credit:hover { opacity: 1; }
+.dev-credit img { height: 20px; width: auto; display: block; }
 .brand h1 { margin: 0; font-size: 21px; font-weight: 800; letter-spacing: 0.2em; color: var(--text); line-height: 1.1; }
 .brand h1 span { color: var(--accent); }
 .tagline { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; letter-spacing: 0.02em; }
@@ -260,8 +272,6 @@ table.risk td { padding: 5px 4px; border-bottom: 1px solid var(--line); }
     background: none; border: none; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; touch-action: none; }
   .sheet-handle .grip { width: 42px; height: 4px; border-radius: 2px; background: var(--line-strong); }
   .brand { padding: 4px 16px 8px; }
-  .brand-mark { width: 30px; height: 30px; }
-  .brand h1 { font-size: 17px; }
   .toolbar { padding: 0 16px 10px; flex-wrap: wrap; row-gap: 8px; }
   .badge { font-size: 10.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .stats { padding: 0 16px 10px; }
@@ -270,7 +280,9 @@ table.risk td { padding: 5px 4px; border-bottom: 1px solid var(--line); }
   .tab { font-size: 11px; }
   .collapse-btn, .map-open-panel { display: none !important; }
   /* keep map controls above the collapsed sheet */
-  .zoom-controls { bottom: calc(var(--sheet-peek) + 14px); }
+  .zoom-controls { bottom: calc(var(--sheet-peek) + 40px); }
+  .dev-credit { bottom: calc(var(--sheet-peek) + 10px); }
+  .brand-logo { height: 36px; }
   #app .map-legend { bottom: calc(var(--sheet-peek) + 14px); } /* #app: beats the base rule declared further down */
   .map-guide { top: 8px; }
   #globe .cesium-viewer-bottom { bottom: var(--sheet-peek); }
