@@ -10,7 +10,8 @@ Copernicus Sentinel-2 NDVI).
   (features, usage, architecture, API, data, limits, changelog, roadmap)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): components, data flow, roadmap
 - [docs/DATA_HARMONIZATION.md](docs/DATA_HARMONIZATION.md): how MODIS and VIIRS become one model
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): server deployment guide (Oracle Cloud + Vercel; prepared, not deployed)
+- **[docs/RAILWAY.md](docs/RAILWAY.md): online deployment on Railway** (website + API in one Docker container)
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): alternative server guide (Oracle Cloud + Vercel; prepared, not used)
 
 ## Try FIRELENS on Windows (no installation of Python or Node)
 

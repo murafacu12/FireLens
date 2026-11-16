@@ -543,8 +543,9 @@ Environment variables (prefix `FIRELENS_`), set in `.env`:
 
 Run only one API process: two would each run the ingest scheduler.
 
-**Production:** Oracle Cloud Always Free VM (Docker + Caddy HTTPS) for the API and Vercel for the
-website, at no cost. Step by step: [DEPLOYMENT.md](DEPLOYMENT.md).
+**Production:** Railway, one Docker container with the website and the API, a volume at `/data`
+for the database (root `Dockerfile`, `railway.json`). Step by step: [RAILWAY.md](RAILWAY.md).
+An alternative single-server setup (Oracle Cloud + Vercel) is in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
