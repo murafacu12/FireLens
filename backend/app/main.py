@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
+import json
 import logging
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -40,14 +42,44 @@ async def _seed(app: FastAPI) -> None:
         app.state.seeding = False
 
 
+RETRY_AFTER_FAILURE_S = 300  # a run where every source failed (network down) is retried soon
+
+
+def _seconds_until_due(app: FastAPI) -> float:
+    """Time until the next ingest is due, counted from the last run that actually stored data.
+    Counting from process start instead would let a restarted app (desktop) fall days behind."""
+    interval = app.state.settings.ingest_interval_minutes * 60
+    with app.state.session_factory() as s:
+        rows = s.scalars(select(models.IngestRunRow).order_by(models.IngestRunRow.id.desc()).limit(20)).all()
+    for row in rows:
+        try:
+            ok = any(not src.get("error") for src in json.loads(row.summary).get("sources", []))
+        except ValueError:
+            continue
+        if ok:
+            age = (datetime.now(UTC).replace(tzinfo=None) - row.finished_at).total_seconds()
+            return max(0.0, interval - age)
+    return 0.0
+
+
 async def _scheduler(app: FastAPI) -> None:
     settings: Settings = app.state.settings
+    delay = 30.0 if app.state.seeding else await run_in_threadpool(_seconds_until_due, app)
     while True:
-        await asyncio.sleep(settings.ingest_interval_minutes * 60)
+        await asyncio.sleep(delay)
+        delay = settings.ingest_interval_minutes * 60
+        if app.state.seeding:
+            continue
         try:
-            await run_ingest(app.state.session_factory, settings, app.state.http)
+            report = await run_ingest(app.state.session_factory, settings, app.state.http)
+            if report.sources and all(s.error for s in report.sources):
+                delay = RETRY_AFTER_FAILURE_S
+            for s in report.sources:
+                if not s.error and s.rows == 0:
+                    log.warning("%s returned no detections (feed empty on NASA's side?)", s.source)
         except Exception:  # keep the loop alive; the next tick retries
             log.exception("scheduled ingest failed")
+            delay = RETRY_AFTER_FAILURE_S
 
 
 def create_app(settings: Settings | None = None, http_transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
@@ -89,6 +121,7 @@ def create_app(settings: Settings | None = None, http_transport: httpx.AsyncBase
             if settings.is_demo:
                 await _seed(app)  # synthetic data is local and fast: keep startup deterministic
             else:
+                app.state.seeding = True  # set now so the scheduler doesn't race the seed
                 tasks.append(asyncio.create_task(_seed(app)))  # real data: don't block startup on the network
         if settings.ingest_interval_minutes > 0 and not settings.is_demo:
             tasks.append(asyncio.create_task(_scheduler(app)))
